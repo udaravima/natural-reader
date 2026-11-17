@@ -12,7 +12,7 @@ import httpx
 from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
-from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection, is_overflow,
+from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, drain, is_feature_rejection, is_overflow,
                    fold_system, iter_lines, json_object, open_stream, parse_arguments, provider_error,
                    rejects_system_role, safe_error_message, settle_dropped)
 
@@ -182,12 +182,14 @@ class OpenAICompatProvider:
         usage: Usage | None = None
         saw_done = False
         try:
-            async for line in iter_lines(resp):
+            lines = iter_lines(resp)
+            async for line in lines:
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
                     saw_done = True
+                    await drain(lines)
                     break
                 try:
                     payload = json.loads(data)

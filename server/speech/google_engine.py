@@ -109,8 +109,12 @@ class GoogleSpeech:
             raise EngineUnavailable(str(e)) from None
         return {"Authorization": f"Bearer {token}"}
 
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=self._timeout, transport=self._transport)
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """On Google's kept-open client (google_cloud.http()); on a client of its own when a transport was given."""
+        if self._transport is not None:
+            async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as c:
+                return await c.request(method, url, **kwargs)
+        return await google_cloud.http().request(method, url, timeout=self._timeout, **kwargs)
 
     async def status(self) -> EngineStatus:
         if not self._location:
@@ -124,8 +128,7 @@ class GoogleSpeech:
     async def _probe(self) -> EngineStatus:
         try:
             headers = await self._headers()
-            async with self._client() as c:
-                r = await c.get(f"{self.endpoint}/v2/{self.recognizer}", headers=headers)
+            r = await self._request("GET", f"{self.endpoint}/v2/{self.recognizer}", headers=headers)
         except EngineUnavailable as e:
             return EngineStatus(False, "error", str(e))
         except httpx.HTTPError as e:
@@ -185,8 +188,8 @@ class GoogleSpeech:
                 "content": base64.b64encode(wav.getvalue()).decode("ascii")}
         headers = await self._headers()
         try:
-            async with self._client() as c:
-                r = await c.post(f"{self.endpoint}/v2/{self.recognizer}:recognize", headers=headers, json=body)
+            r = await self._request("POST", f"{self.endpoint}/v2/{self.recognizer}:recognize", headers=headers,
+                                    json=body)
         except httpx.HTTPError as e:
             logger.warning("Google recognize failed: %s", type(e).__name__)
             raise EngineFailed(_DIDNT_ANSWER) from None

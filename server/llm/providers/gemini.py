@@ -23,7 +23,7 @@ import httpx
 
 from ..types import (Capabilities, CallSettings, Chunk, FeatureDropped, Finish, Message, ProviderError,
                      ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall, ToolCallReady, ToolSpec, Usage)
-from .base import (FeatureMemory, ProviderConfig, TTLCache, is_feature_rejection, is_overflow, iter_lines,
+from .base import (FeatureMemory, ProviderConfig, TTLCache, drain, is_feature_rejection, is_overflow, iter_lines,
                    json_object, open_stream, parse_arguments, provider_error, safe_error_message)
 
 logger = logging.getLogger(__name__)
@@ -233,11 +233,13 @@ class GeminiProvider:
         status: str | None = None
         usage: Usage | None = None
         try:
-            async for line in iter_lines(resp):
+            lines = iter_lines(resp)
+            async for line in lines:
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    await drain(lines)
                     break
                 try:
                     event = json.loads(data)
