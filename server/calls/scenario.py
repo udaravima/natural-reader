@@ -1,7 +1,9 @@
 """A scenario pack (spec 2026-11-17-call-simulation): a folder with
 
 - `scenario.toml`: the scenario's id, name and fixed "today", the agent (name, greeting, filler line, backstory,
-  rules) and the scripted calls, each with what the caller says, turn by turn, and what the call must achieve;
+  rules; optionally a filler line per tool, "still checking" lines and keypad instructions) and the scripted calls,
+  each with what the caller says, turn by turn, and what the call must achieve. A call can also say what the caller
+  says when numbers are keyed instead of spoken (`caller_keypad`) and the digits they key (`[calls.keys]`);
 - `data.json`: the business's data, copied fresh into every call;
 - `tools.py`: the tools, plain functions marked with server.calls.simtools.tool.
 
@@ -33,6 +35,9 @@ class Agent:
     filler: str
     backstory: str
     rules: str
+    fillers: dict[str, tuple[str, ...]] = field(default_factory=dict)   # tool -> recorded lines; "" = any tool
+    still_checking: tuple[str, ...] = ()                                  # when a lookup takes long
+    keypad: dict[str, str] = field(default_factory=dict)                  # what is keyed -> the instruction
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,11 @@ class CallScript:
     caller: tuple[str, ...]
     language: str
     expect: Expect
+    caller_keypad: tuple[str, ...] | None = None   # what the caller says when numbers are keyed instead
+    keys: dict[str, str] = field(default_factory=dict)   # what -> the digits the caller keys
+
+    def lines(self, keypad: bool) -> tuple[str, ...]:
+        return self.caller_keypad if keypad and self.caller_keypad else self.caller
 
 
 @dataclass(frozen=True)
@@ -66,8 +76,8 @@ class Scenario:
     tools: tuple[SimTool, ...] = field(repr=False)
     directory: Path = field(repr=False)
 
-    def toolset(self) -> ToolSet:
-        return ToolSet(list(self.tools), self.data, self.today)
+    def toolset(self, extra: tuple[SimTool, ...] = ()) -> ToolSet:
+        return ToolSet([*self.tools, *extra], self.data, self.today)
 
     def call(self, call_id: str) -> CallScript:
         for c in self.calls:
@@ -120,6 +130,39 @@ def _expect(table: Any, where: str) -> Expect:
                   transferred=transferred)
 
 
+def _lines(value: Any, where: str) -> tuple[str, ...]:
+    lines = [value] if isinstance(value, str) else value
+    if not isinstance(lines, list) or not lines or not all(isinstance(t, str) and t.strip() for t in lines):
+        raise ScenarioError(f"{where} must be a line or a list of lines")
+    return tuple(t.strip() for t in lines)
+
+
+def _fillers(agent_raw: dict, default: str, tool_names: set[str], where: str) -> dict[str, tuple[str, ...]]:
+    table = agent_raw.get("fillers") or {}
+    if not isinstance(table, dict):
+        raise ScenarioError(f"{where} [agent.fillers] must be a table of tool = line(s)")
+    unknown = sorted(set(table) - tool_names)
+    if unknown:
+        raise ScenarioError(f"{where} [agent.fillers] names {', '.join(unknown)}, which tools.py doesn't define")
+    fillers = {name: _lines(lines, f"{where} [agent.fillers] {name}") for name, lines in table.items()}
+    if default:
+        fillers[""] = (default,)
+    return fillers
+
+
+def _keys(table: Any, keypad: dict[str, str], where: str) -> dict[str, str]:
+    if table is None:
+        return {}
+    if not isinstance(table, dict):
+        raise ScenarioError(f"{where} must be a table of what = digits")
+    for what, digits in table.items():
+        if not isinstance(digits, str) or not digits.isdigit():
+            raise ScenarioError(f"{where}.{what} must be digits only, such as \"0771234567\"")
+        if what not in keypad:
+            raise ScenarioError(f"{where}.{what}: the agent has no [agent.keypad] line asking for {what!r}")
+    return dict(table)
+
+
 def _load_tools(path: Path, scenario_id: str) -> tuple[SimTool, ...]:
     spec = importlib.util.spec_from_file_location(f"_scenario_{scenario_id}_tools", path)
     if spec is None or spec.loader is None:
@@ -164,13 +207,21 @@ def load_scenario(name_or_path: str) -> Scenario:
     agent_raw = raw.get("agent")
     if not isinstance(agent_raw, dict):
         raise ScenarioError(f"{where}: an [agent] table is needed")
-    agent = Agent(name=_text(agent_raw, "name", f"{where} [agent]"),
-                  greeting=_text(agent_raw, "greeting", f"{where} [agent]"),
-                  filler=_text(agent_raw, "filler", f"{where} [agent]", required=False),
-                  backstory=_text(agent_raw, "backstory", f"{where} [agent]", required=False),
-                  rules=_text(agent_raw, "rules", f"{where} [agent]"))
     tools = _load_tools(tools_path, scenario_id)
     tool_names = {t.name for t in tools}
+    filler = _text(agent_raw, "filler", f"{where} [agent]", required=False)
+    keypad = agent_raw.get("keypad") or {}
+    if not isinstance(keypad, dict) or not all(isinstance(v, str) and v.strip() for v in keypad.values()):
+        raise ScenarioError(f"{where} [agent.keypad] must be a table of what = the line asking for it")
+    agent = Agent(name=_text(agent_raw, "name", f"{where} [agent]"),
+                  greeting=_text(agent_raw, "greeting", f"{where} [agent]"),
+                  filler=filler,
+                  backstory=_text(agent_raw, "backstory", f"{where} [agent]", required=False),
+                  rules=_text(agent_raw, "rules", f"{where} [agent]"),
+                  fillers=_fillers(agent_raw, filler, tool_names, where),
+                  still_checking=(_lines(agent_raw["still_checking"], f"{where} [agent] still_checking")
+                                  if "still_checking" in agent_raw else ()),
+                  keypad={k: v.strip() for k, v in keypad.items()})
     language = _text(raw, "language", where, required=False) or "en"
 
     calls: list[CallScript] = []
@@ -187,9 +238,15 @@ def load_scenario(name_or_path: str) -> Scenario:
                                 f"(it has {', '.join(sorted(tool_names))})")
         if any(x.id == call_id for x in calls):
             raise ScenarioError(f"{cw}: the id {call_id!r} is used twice")
+        keyed = c.get("caller_keypad")
+        if keyed is not None and (not isinstance(keyed, list) or not keyed
+                                  or not all(isinstance(t, str) and t.strip() for t in keyed)):
+            raise ScenarioError(f"{cw} ({call_id}): `caller_keypad` must be a list of lines, turn by turn")
         calls.append(CallScript(call_id, _text(c, "title", cw, required=False) or call_id,
                                 tuple(t.strip() for t in caller),
-                                _text(c, "language", cw, required=False) or language, expect))
+                                _text(c, "language", cw, required=False) or language, expect,
+                                tuple(t.strip() for t in keyed) if keyed else None,
+                                _keys(c.get("keys"), agent.keypad, f"{cw} ({call_id}) keys")))
     if not calls:
         raise ScenarioError(f"{where}: no [[calls]]")
     return Scenario(scenario_id, _text(raw, "name", where), today, language, agent, tuple(calls), data, tools,

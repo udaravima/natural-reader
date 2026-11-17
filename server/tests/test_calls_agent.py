@@ -116,3 +116,31 @@ async def test_tool_results_stay_in_the_history_for_later_turns():
     await agent.turn("How much again?")
     later = router.requests[2]["messages"]
     assert [m.role for m in later] == ["system", "user", "assistant", "tool", "assistant", "user"]
+
+
+async def test_each_step_is_logged_with_its_tools_and_whether_it_said_anything():
+    from server.calls.agent import Step
+    agent, _, _, _ = agent_with(
+        [0.4, ToolCallReady(ToolCall("c1", "check_availability", STAY)), Finish("tool_calls")],
+        [0.5, TextDelta("It is free."), Finish("stop")])
+    r = await agent.turn("Is the deluxe room free?")
+    assert r.step_log == [Step(pytest.approx(0.4), ("check_availability",), False, ()),
+                          Step(pytest.approx(0.9), (), True, ())]
+
+
+async def test_a_keypad_step_logs_the_digits_the_caller_keyed():
+    from server.calls.agent import Step
+    from server.calls.keypad import keypad_tool
+    clock = Clock()
+    router = FakeRouter(clock, [0.3, ToolCallReady(ToolCall("k", "collect_digits", {"what": "phone"})),
+                                Finish("tool_calls")], [0.2, TextDelta("Thank you."), Finish("stop")])
+    agent = CallAgent(router, "fake:model", HOTEL, HOTEL.toolset((keypad_tool({"phone": "0771234567"}),)),
+                      clock=clock, keypad=True)
+    r = await agent.turn("My name is Kasun Perera.")
+    assert r.step_log[0] == Step(pytest.approx(0.3), ("collect_digits",), False, (("phone", "0771234567"),))
+    assert "collect_digits" in agent.messages[0].content
+
+
+async def test_without_the_keypad_the_prompt_does_not_mention_it():
+    agent, _, _, _ = agent_with([TextDelta("Hello."), Finish("stop")])
+    assert "collect_digits" not in agent.messages[0].content

@@ -79,6 +79,20 @@ def compose(*, hearing: dict[tuple[str, int], float], turns: list[dict], voiced:
     return rows
 
 
+def clip_sources(calls, folder: Path | None) -> dict[str, Path]:
+    """Recordings of the caller's lines in `folder` (named <call id>-<turn>.wav after the spoken script), by the
+    words they say: a keypad version of a call reuses the clip of any line it shares with the spoken one."""
+    found: dict[str, Path] = {}
+    if folder is None:
+        return found
+    for script in calls:
+        for n, said in enumerate(script.caller, 1):
+            path = folder / f"{script.id}-{n}.wav"
+            if path.is_file():
+                found.setdefault(said, path)
+    return found
+
+
 def read_wav(data: bytes, rate: int) -> np.ndarray:
     """A recording as mono float32 at `rate`."""
     samples, source_rate = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)

@@ -22,6 +22,7 @@ from typing import Any
 from ..llm.router import UnknownModel
 from ..llm.types import (CallSettings, Message, ProviderError, ProviderTimeout, ProviderUnavailable, TextDelta,
                          ToolCall, ToolCallReady, Usage)
+from .keypad import KEYPAD_RULES
 from .scenario import Scenario
 from .sentences import SentenceSplitter
 from .simtools import ToolRun, ToolSet
@@ -34,7 +35,7 @@ CALL_RULES = """This is a phone call, and everything you write is read aloud by 
 - If a detail sounds misheard or unclear, ask the caller to repeat it."""
 
 
-def system_prompt(scenario: Scenario) -> str:
+def system_prompt(scenario: Scenario, keypad: bool = False) -> str:
     agent = scenario.agent
     today = date.fromisoformat(scenario.today)
     parts = [
@@ -42,11 +43,22 @@ def system_prompt(scenario: Scenario) -> str:
         agent.backstory,
         "Your rules:\n" + agent.rules,
         CALL_RULES,
+        KEYPAD_RULES if keypad else "",
         f"Today is {today:%A}, {today.day} {today:%B %Y}. Work out full dates from what the caller says, and send "
         "dates to the tools as YYYY-MM-DD.",
         f'The call has started and you have already said: "{agent.greeting}" Don\'t greet the caller again.',
     ]
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+@dataclass(frozen=True)
+class Step:
+    """One model request in a turn: when its stream ended, the tools it called, whether it said anything, and the
+    digits the caller keyed for it (what, digits). A step with tools and no words is when a filler would play."""
+    end_s: float
+    tools: tuple[str, ...]
+    words: bool
+    keyed: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -57,6 +69,7 @@ class TurnResult:
     whole_s: float = 0.0
     steps: int = 0
     step_ends: list[float] = field(default_factory=list)   # when each model request's stream ended
+    step_log: list[Step] = field(default_factory=list)
     tool_runs: list[ToolRun] = field(default_factory=list)
     tool_s: float = 0.0
     tokens: tuple[int, int] = (0, 0)    # prompt, completion: summed over the turn's requests
@@ -76,13 +89,13 @@ def _reason(e: Exception) -> str:
 class CallAgent:
     def __init__(self, router: Any, model_id: str, scenario: Scenario, toolset: ToolSet, *,
                  settings: CallSettings | None = None, max_steps: int = 4, first_clause_chars: int = 30,
-                 clock: Callable[[], float] = time.perf_counter) -> None:
+                 clock: Callable[[], float] = time.perf_counter, keypad: bool = False) -> None:
         self.router, self.model_id, self.toolset = router, model_id, toolset
         self.settings = settings or CallSettings()
         self.max_steps = max(1, max_steps)
         self.first_clause_chars = first_clause_chars
         self.clock = clock
-        self.messages: list[Message] = [Message("system", system_prompt(scenario))]
+        self.messages: list[Message] = [Message("system", system_prompt(scenario, keypad))]
 
     async def turn(self, caller_text: str) -> TurnResult:
         started = self.clock()
@@ -119,16 +132,21 @@ class CallAgent:
                     elif isinstance(chunk, Usage):
                         prompt_tokens += chunk.prompt_tokens
                         completion_tokens += chunk.completion_tokens
-                result.step_ends.append(since())
+                ended = since()
+                result.step_ends.append(ended)
                 result.text += step_text
                 if not calls:
                     self.messages.append(Message("assistant", step_text))
+                    result.step_log.append(Step(ended, (), bool(step_text.strip())))
                     break
                 if step_text.strip():
                     narration_ended.append(since())
                 self.messages.append(Message("assistant", step_text, tool_calls=tuple(calls)))
                 ran_tool = True
-                self._run_tools(calls, result)
+                runs = self._run_tools(calls, result)
+                keyed = tuple((r.result["what"], r.result["digits"]) for r in runs
+                              if r.name == "collect_digits" and r.ok and "digits" in r.result)
+                result.step_log.append(Step(ended, tuple(c.name for c in calls), bool(step_text.strip()), keyed))
         except (ProviderError, ProviderTimeout, ProviderUnavailable, UnknownModel) as e:
             result.error = _reason(e)
         take(splitter.flush())
@@ -137,11 +155,14 @@ class CallAgent:
         result.empty_after_tool = ran_tool and result.error is None and not step_text.strip()
         return result
 
-    def _run_tools(self, calls: list[ToolCall], result: TurnResult) -> None:
+    def _run_tools(self, calls: list[ToolCall], result: TurnResult) -> list:
+        runs = []
         for call in calls:
             started = self.clock()
             outcome = self.toolset.run(call.name, call.arguments)
             result.tool_s += self.clock() - started
             result.tool_runs.append(self.toolset.log[-1])
+            runs.append(self.toolset.log[-1])
             self.messages.append(Message("tool", json.dumps(outcome, ensure_ascii=False), tool_call_id=call.id,
                                          name=call.name))
+        return runs

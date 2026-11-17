@@ -1,0 +1,86 @@
+# Prices for the call benchmark's Cost sheet (spec 2026-11-17-call-bench-round2), in US dollars, at the paid tier
+# and the lowest volume band. `official` is true when the figure is the provider's own; `note` says how it was read
+# when the page itself couldn't be. Free monthly allowances are not taken off. Check them again before relying on
+# them: prices change.
+#
+# An engine is found by its benchmark spec, then by shorter forms of it: "google:<model>:<voice>" ->
+# "google:<model>" -> "google".
+checked = "2026-11-17"
+
+[hearing.whisper]
+local = true
+note = "Runs on the server's own CPU: no fee"
+
+[hearing.google]
+per_minute = 0.016
+increment_s = 1
+source = "https://cloud.google.com/speech-to-text/pricing"
+official = true
+note = "Speech-to-Text V2 standard recognition, first 500,000 minutes a month (Chirp models included). Google's page draws its table in the browser, so the figure was read from search results quoting it; billing by the second is from a third-party guide (costbench.com)."
+
+[hearing.google-stream]
+per_minute = 0.016
+increment_s = 1
+source = "https://cloud.google.com/speech-to-text/pricing"
+official = true
+note = "Streaming is billed as standard recognition (as for hearing.google), on the audio sent: the clip and the silence up to the end-of-turn decision."
+
+[hearing."openai:whisper-1"]
+per_minute = 0.006
+source = "https://developers.openai.com/api/docs/pricing"
+official = true
+note = "Deprecated: shuts down 2027-02-26"
+
+[hearing."openai:gpt-4o-mini-transcribe"]
+per_minute = 0.003
+source = "https://developers.openai.com/api/docs/pricing"
+official = true
+note = "OpenAI's own per-minute estimate; billed by tokens ($1.25 a million audio tokens in, $5 a million text tokens out). Deprecated: shuts down 2027-02-26"
+
+[hearing."openai:gpt-transcribe"]
+per_minute = 0.0045
+source = "https://developers.openai.com/api/docs/pricing"
+official = true
+
+[hearing."openai-rt:gpt-live-transcribe"]
+per_minute = 0.017
+increment_s = 1
+source = "https://developers.openai.com/api/docs/pricing"
+official = true
+note = "Billed by audio duration; the service reports whole seconds"
+
+[model."gemini:gemini-3.1-flash-lite"]
+input_per_m = 0.25
+output_per_m = 1.50
+source = "https://aistudio.google.com/docs/pricing"
+official = true
+note = "Paid Standard tier, text input; the free tier the benchmark ran on costs nothing but allows 15 requests a minute"
+
+[voice.kokoro]
+local = true
+note = "Runs on the server's own CPU: no fee"
+
+[voice.none]
+local = true
+
+[voice.chirp]
+per_m_chars = 30.0
+source = "https://cloud.google.com/text-to-speech/pricing"
+official = true
+note = "Chirp 3 HD voices; the first 1 million characters a month are free (not taken off here). Read from search results quoting Google's page."
+
+[voice."google:gemini-2.5-flash-lite-preview-tts"]
+text_per_m = 0.50
+audio_per_m = 10.0
+audio_tokens_per_s = 25
+source = "https://cloud.google.com/text-to-speech/pricing"
+official = true
+note = "Text tokens estimated as characters / 4. Read from search results quoting Google's page."
+
+[voice."google:gemini-2.5-flash-tts"]
+text_per_m = 0.50
+audio_per_m = 10.0
+audio_tokens_per_s = 25
+source = "https://cloudprice.net/models/google-gemini-2-5-flash-tts"
+official = false
+note = "Third-party listing; text tokens estimated as characters / 4"

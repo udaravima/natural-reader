@@ -12,6 +12,7 @@ language = "en"
 name = "Nadeesha"
 greeting = "Good day, thank you for calling Lotus Bay Hotel, Colombo. This is Nadeesha. How may I help you?"
 filler = "One moment while I check that for you."
+still_checking = ["Thank you for waiting, I'm still checking.", "Just a moment longer, please."]
 backstory = """
 You are Nadeesha, a reservations agent at Lotus Bay Hotel, a 120-room seaside hotel on Galle Road in Colombo.
 You have worked at the front desk and on the reservations line for six years. You are warm, calm and quick, you
@@ -28,6 +29,20 @@ rules = """
 - Don't offer discounts, upgrades or anything the tools don't have.
 """
 
+# Recorded once per voice and played the moment the model decides on a lookup (round 2 of the benchmark).
+[agent.fillers]
+check_availability = ["Let me check those dates for you.", "Let me see what we have on those dates."]
+create_booking = ["I'll make that booking for you now."]
+find_booking = ["Let me find that booking."]
+cancel_booking = ["I'll cancel that for you now."]
+get_hotel_info = ["Let me check that for you.", "Let me look that up."]
+transfer_to_human = ["I'll put you through now."]
+
+# What the agent says when it asks the caller to key a number on the phone's keypad (--keypad).
+[agent.keypad]
+phone = "Please key in your phone number on your keypad, then press the hash key."
+reference = "Please key in the numbers of your booking reference, then press the hash key."
+
 [[calls]]
 id = "book-deluxe"
 title = "Books a deluxe room for two nights and asks for the reference"
@@ -38,6 +53,15 @@ caller = [
   "Yes, that's all correct.",
   "Great. What's my booking reference?",
 ]
+caller_keypad = [
+  "Hi, good morning. I'd like to book a room for two adults, arriving on the twelfth of December and leaving on the fourteenth.",
+  "How much is the deluxe room with the sea view?",
+  "That's fine, please book it. My name is Kasun Perera.",
+  "Yes, that's all correct.",
+  "Great. What's my booking reference?",
+]
+[calls.keys]
+phone = "0771234567"
 [calls.expect]
 tools = ["check_availability", "create_booking"]
 says = [["84000", "eighty four thousand"], ["10450"]]
@@ -64,6 +88,13 @@ caller = [
   "Yes, that's the one, under Nimal Perera. Will I be charged anything?",
   "Okay, please go ahead and cancel it.",
 ]
+caller_keypad = [
+  "Hi, I need to cancel my reservation. I have the booking reference.",
+  "Yes, that's the one, under Nimal Perera. Will I be charged anything?",
+  "Okay, please go ahead and cancel it.",
+]
+[calls.keys]
+reference = "10421"
 [calls.expect]
 tools = ["cancel_booking"]
 cancelled = ["LB-10421"]
@@ -91,6 +122,13 @@ caller = [
   "My mobile number is zero seven one, five five five, two four six eight.",
   "Yes, please confirm it.",
 ]
+caller_keypad = [
+  "Good evening. I want a standard room for one person, from the third to the fifth of December.",
+  "Please book it under Thilini Jayawardena. That's T H I L I N I, Jayawardena.",
+  "Yes, please confirm it.",
+]
+[calls.keys]
+phone = "0715552468"
 [calls.expect]
 tools = ["create_booking"]
 booking = { room_type = "standard", check_in = "2026-12-03", check_out = "2026-12-05", guests = 1, guest_name = "Thilini Jayawardena", phone = "0715552468" }

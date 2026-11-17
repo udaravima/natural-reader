@@ -37,6 +37,7 @@ class Heard:
     net: dict[str, float] | None = None
     new_connection: bool | None = None
     error: str | None = None
+    billed_s: float | None = None   # audio the service bills for, when it says (streaming engines)
 
 
 @dataclass
@@ -204,8 +205,15 @@ def make_ears(spec: str, env: Mapping[str, str] = os.environ):
     if kind == "openai" and rest:
         model, _, url = rest.partition("@")
         return OpenAIEars(model, url or OPENAI_URL, env)
-    raise SetupError(f"--hear {spec!r}: use text, whisper:<model id>, google:<recognizer name> or "
-                     "openai:<model>[@<url>]")
+    if kind == "google-stream" and rest:
+        from .streaming import GoogleStreamEars
+        recognizer, _, model = rest.partition("@")
+        return GoogleStreamEars(recognizer, model, env)
+    if kind == "openai-rt" and rest:
+        from .streaming import OpenAIRealtimeEars
+        return OpenAIRealtimeEars(rest, env)
+    raise SetupError(f"--hear {spec!r}: use text, whisper:<model id>, google:<recognizer name>, "
+                     "openai:<model>[@<url>], google-stream:<recognizer>[@<model>] or openai-rt:<model>")
 
 
 # ---- voices ----

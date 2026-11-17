@@ -81,6 +81,39 @@ Output, in `bench-out/matrix-<scenario>-<time>/`:
   `recordings/calls/<voice>/<call>.wav`: **each call as it would sound**, with the measured waits as silence,
   so you hear the pauses as a caller would.
 
+### Round 2: fillers, keypad digits, the end of a turn, streaming hearing and cost
+
+Design: [the round 2 spec](superpowers/specs/2026-11-17-call-bench-round2-design.md). Every matrix run now also:
+
+- plays a **recorded filler** the moment the model's step ends with a lookup and no words (one or more lines per
+  tool in the scenario's `[agent.fillers]`, the agent's `filler` for any other tool), and a **"still checking"**
+  line (`still_checking`) when nothing has sounded for `--still-after` seconds (1.5) after it. Lines are made once
+  per voice before the calls, so they cost no time on the call, and never repeat back to back;
+- runs **Smart Turn v3.2** (Pipecat, BSD-2-Clause, 8 MB, downloaded from Hugging Face on first use) on every
+  caller clip: after 0.2 s of silence it says whether the caller has finished, else the turn ends at 3 s. The
+  report gives its wait beside the fixed silence, and the **cut-offs**: pauses where it would have talked over the
+  caller. `--no-smart-turn` skips it;
+- costs each pair per call and per 1,000 calls (sheets Cost and Prices), from `server/calls/prices.toml`: every
+  price names its source, the date it was checked and whether it is the provider's own. An engine with no price
+  shows as unknown, not free.
+
+`--keypad` plays the calls' `caller_keypad` lines: the caller keys the phone number or booking reference
+(`[calls.keys]`) when the agent calls `collect_digits`, whose recorded instruction comes from `[agent.keypad]`.
+Keying is taken as 1.0 s to start and 0.4 s a key, the hash included (`--keying 1.0,0.4`, an assumption); that
+time is the caller's, not the agent's silence. The recordings play the keypad tones.
+
+Two streaming hearing engines get the clip as it is spoken, then 0.2 s of silence; their time runs from the
+end-of-turn decision to the final text:
+
+| Engine | Means |
+|---|---|
+| `google-stream:<recognizer>[@<model>]` | Speech-to-Text v2 StreamingRecognize (gRPC only). Needs `google-cloud-speech` in the benchmark's environment, not the app's: `uv pip install --python .venv/bin/python google-cloud-speech`. Use the implicit recognizer and a model, such as `projects/<p>/locations/europe-west4/recognizers/_@chirp_2` or `.../locations/us/recognizers/_@chirp_3`; asia-southeast1 refused streaming in November 2026 |
+| `openai-rt:<model>` | OpenAI's Realtime API in transcription mode, such as `openai-rt:gpt-live-transcribe`; the same key as `openai:` |
+
+The report's pairs table then reads: first sound **without fillers** (round 1's way, the fixed silence), **with
+fillers**, and **with fillers and the end-of-turn model**; **first answer** (when the reply itself starts) and
+**dead air** (all the silence in a turn). The whole-call recordings use the last of these.
+
 ### Reference points for the wait
 
 | Band | Up to | Basis |
@@ -137,8 +170,9 @@ network's share depends on where the code runs.
 
 A scenario is a folder (in `server/calls/scenarios/`, or anywhere, passed as `--scenario PATH`):
 
-- `scenario.toml`: `id`, `name`, a fixed `today`, the `[agent]` (name, greeting, filler, backstory, rules) and
-  `[[calls]]`, each with the caller's lines and `[calls.expect]`;
+- `scenario.toml`: `id`, `name`, a fixed `today`, the `[agent]` (name, greeting, filler, backstory, rules,
+  `still_checking`, `[agent.fillers]` per tool, `[agent.keypad]` instructions) and `[[calls]]`, each with the
+  caller's lines, `[calls.expect]`, and for `--keypad` the `caller_keypad` lines and `[calls.keys]`;
 - `data.json`: the business's data, copied fresh into every call;
 - `tools.py`: plain functions marked `@tool(description, json_schema)`, taking `(state, args)` and returning a
   dict; raise `ToolError` for a refusal the agent should pass on.

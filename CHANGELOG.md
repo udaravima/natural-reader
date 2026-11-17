@@ -25,6 +25,17 @@ All notable changes to this project will be documented in this file.
   voices, which aren't in the app yet); each pair's wait is composed and rated
   against reference points for conversation timing. Exports Excel and CSV, and
   saves every clip plus each call as it would sound, the measured waits included.
+- **Round 2 of the call benchmark: what fills the silence, when a turn ends, and
+  what a call costs.** A recorded filler per tool plays the moment the model
+  decides on a lookup, with a "still checking" line if the wait goes on
+  (`[agent.fillers]`, `still_checking`); `--keypad` lets the caller key a phone
+  number or booking reference instead of saying it (a `collect_digits` tool,
+  keypad tones in the recordings); Pipecat's Smart Turn v3.2 end-of-turn model
+  hears every caller clip beside Talk's fixed 0.7 s silence, and the report
+  counts where it would cut the caller off; two streaming hearing engines
+  (`google-stream:` over gRPC, `openai-rt:` over OpenAI's Realtime API); and a
+  Cost sheet per stage and per 1,000 calls from a price list that names each
+  price's source (`server/calls/prices.toml`). Benchmark only: Talk is unchanged.
 
 ### Fixed
 

@@ -76,3 +76,17 @@ def test_csv_and_excel_exports(tmp_path):
     sheet = book["Voices"]
     assert [c.value for c in sheet[1]] == ["engine", "seconds", "note"]
     assert sheet["B2"].value == 0.5
+
+
+def test_caller_clips_are_found_by_what_they_say(tmp_path):
+    from server.calls.matrix import clip_sources
+    from server.calls.scenario import load_scenario
+    hotel = load_scenario("hotel")
+    (tmp_path / "book-deluxe-1.wav").write_bytes(b"x")
+    (tmp_path / "book-deluxe-3.wav").write_bytes(b"y")
+    found = clip_sources(hotel.calls, tmp_path)
+    keyed = hotel.call("book-deluxe").lines(True)
+    assert found[keyed[0]] == tmp_path / "book-deluxe-1.wav"   # the same words in both versions of the call
+    assert keyed[2] not in found                               # the keypad line was never recorded
+    assert found[hotel.call("book-deluxe").caller[2]] == tmp_path / "book-deluxe-3.wav"
+    assert clip_sources(hotel.calls, None) == {}
