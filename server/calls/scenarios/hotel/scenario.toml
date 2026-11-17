@@ -1,0 +1,108 @@
+# A reservations line for an invented hotel (spec 2026-11-17-call-simulation). The caller's turns are played in
+# order; each call's [calls.expect] says what it must achieve. "today" is fixed so "the twelfth" means the same
+# date on every run. Phrases in `says` are compared after server/calls/scoring.py normalize(): lower case, no punctuation,
+# numbers read digit by digit joined ("one zero four" is "104"), ordinals as "12th", spelled letters joined ("L B" is "lb").
+
+id = "hotel"
+name = "Lotus Bay Hotel, Colombo: reservations"
+today = "2026-12-01"
+language = "en"
+
+[agent]
+name = "Nadeesha"
+greeting = "Good day, thank you for calling Lotus Bay Hotel, Colombo. This is Nadeesha. How may I help you?"
+filler = "One moment while I check that for you."
+backstory = """
+You are Nadeesha, a reservations agent at Lotus Bay Hotel, a 120-room seaside hotel on Galle Road in Colombo.
+You have worked at the front desk and on the reservations line for six years. You are warm, calm and quick, you
+speak clear Sri Lankan English, and you never rush a caller.
+"""
+rules = """
+- Help callers check rooms and prices, book a room, find or cancel a booking, and answer questions about the hotel.
+- Every price, availability, policy and booking detail comes from a tool in this call. Never guess one.
+- To book you need the guest's full name, a phone number, the room type, the dates and the number of guests. Ask
+  for what is missing, one thing at a time.
+- Read the details back and wait for a yes before you book. After booking, give the reference.
+- Before cancelling, tell the caller the fee, if any, and wait for a yes.
+- A complaint, a billing problem or a request for a manager goes to a person: transfer the call.
+- Don't offer discounts, upgrades or anything the tools don't have.
+"""
+
+[[calls]]
+id = "book-deluxe"
+title = "Books a deluxe room for two nights and asks for the reference"
+caller = [
+  "Hi, good morning. I'd like to book a room for two adults, arriving on the twelfth of December and leaving on the fourteenth.",
+  "How much is the deluxe room with the sea view?",
+  "That's fine, please book it. My name is Kasun Perera and my number is zero seven seven, one two three, four five six seven.",
+  "Yes, that's all correct.",
+  "Great. What's my booking reference?",
+]
+[calls.expect]
+tools = ["check_availability", "create_booking"]
+says = [["84000", "eighty four thousand"], ["10450"]]
+booking = { room_type = "deluxe", check_in = "2026-12-12", check_out = "2026-12-14", guests = 2, guest_name = "Kasun Perera", phone = "0771234567" }
+
+[[calls]]
+id = "sold-out-christmas"
+title = "Asks for a family suite over Christmas, which is sold out"
+caller = [
+  "Hello, do you have a family suite for two adults and two children from the twenty-fourth to the twenty-sixth of December?",
+  "Oh no. What else do you have for the four of us on those dates?",
+  "Okay, thank you. I'll talk to my wife and call you back.",
+]
+[calls.expect]
+tools = ["check_availability"]
+never_tools = ["create_booking"]
+says = [["sold out", "fully booked", "not available", "unavailable", "no family suite", "booked out"]]
+
+[[calls]]
+id = "cancel-booking"
+title = "Cancels a booking by its reference and asks about a fee"
+caller = [
+  "Hi, I need to cancel my reservation. The reference is L B one zero four two one.",
+  "Yes, that's the one, under Nimal Perera. Will I be charged anything?",
+  "Okay, please go ahead and cancel it.",
+]
+[calls.expect]
+tools = ["cancel_booking"]
+cancelled = ["LB-10421"]
+says = [["no charge", "free of charge", "no fee", "no cancellation fee", "not be charged", "won't be charged", "wont be charged", "free", "0 rupees"]]
+
+[[calls]]
+id = "hotel-questions"
+title = "Asks about check-in time, breakfast and an airport car"
+caller = [
+  "Hi, I have a booking next week and a few questions. What time can I check in?",
+  "Is breakfast included in the rate?",
+  "And can you send a car to the airport for us? How much is that?",
+]
+[calls.expect]
+tools = ["get_hotel_info"]
+never_tools = ["create_booking", "cancel_booking"]
+says = [["2 pm", "2 p m", "2pm", "2 o'clock", "2 in the afternoon", "14 00", "1400"], ["9500", "9 thousand 5 hundred", "nine thousand five hundred"]]
+
+[[calls]]
+id = "spelled-name"
+title = "Books a standard room, spelling a name and giving a phone number"
+caller = [
+  "Good evening. I want a standard room for one person, from the third to the fifth of December.",
+  "Please book it under Thilini Jayawardena. That's T H I L I N I, Jayawardena.",
+  "My mobile number is zero seven one, five five five, two four six eight.",
+  "Yes, please confirm it.",
+]
+[calls.expect]
+tools = ["create_booking"]
+booking = { room_type = "standard", check_in = "2026-12-03", check_out = "2026-12-05", guests = 1, guest_name = "Thilini Jayawardena", phone = "0715552468" }
+
+[[calls]]
+id = "complaint-transfer"
+title = "A billing complaint that must go to a person"
+caller = [
+  "Hello, I stayed with you last month and I was charged twice for my room. I want to speak to a manager.",
+  "No, I don't want to explain it all again. Please just put me through.",
+]
+[calls.expect]
+tools = ["transfer_to_human"]
+never_tools = ["create_booking", "cancel_booking"]
+transferred = true

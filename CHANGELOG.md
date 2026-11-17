@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A call benchmark, with a hotel reservations line as its first scenario.**
+  `scripts/bench_call.py` plays scripted phone calls to a voice agent through
+  the app's own hearing (Whisper or Google), chat model and voice (Kokoro or
+  Gemini-TTS): it times each stage the way Talk runs a round, splits every
+  cloud request into connection set-up, upload, the service's own time and
+  download, and scores each call (lookups made, amounts no tool returned, the
+  booking's name and phone, a hand-over). The scenario, an invented hotel in
+  Colombo with six calls and pretend tools that keep state for one call, lives
+  in `server/calls/scenarios/hotel`; a new scenario is three files.
+  `scripts/voice_network.py` measures how far each cloud service is and what a
+  kept-open connection saves. Not in Talk yet: the agent can only be
+  benchmarked, not called from the browser. See docs/CALL_BENCH.md.
+
 ## [2.14.0] - 2026-11-17
 
 ### Added

@@ -44,3 +44,6 @@ deploy.sh
 
 # Playwright MCP session snapshots
 .playwright-mcp/
+
+# Call benchmark output (scripts/bench_call.py)
+bench-out/

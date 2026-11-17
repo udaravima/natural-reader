@@ -1,0 +1,35 @@
+{
+  "hotel": {"name": "Lotus Bay Hotel", "city": "Colombo", "address": "Galle Road, Colombo 03", "currency": "LKR"},
+  "rooms": {
+    "standard": {"name": "Standard Room, city view", "max_guests": 2, "rate": 28000, "count": 6},
+    "deluxe": {"name": "Deluxe Room, sea view", "max_guests": 3, "rate": 42000, "count": 4},
+    "family": {"name": "Family Suite, two bedrooms", "max_guests": 5, "rate": 65000, "count": 2},
+    "executive": {"name": "Executive Suite, sea view with lounge access", "max_guests": 2, "rate": 95000, "count": 1}
+  },
+  "peak": {"from": "2026-12-20", "to": "2027-01-05", "surcharge_percent": 25},
+  "sold_out": [
+    {"room_type": "family", "from": "2026-12-24", "to": "2026-12-27"},
+    {"room_type": "executive", "from": "2026-12-30", "to": "2027-01-02"}
+  ],
+  "info": {
+    "check_in": "Check-in is from 2 pm. Early check-in from 10 am costs LKR 8,000, if a room is ready.",
+    "check_out": "Check-out is by 12 noon. Late check-out until 4 pm costs LKR 10,000.",
+    "breakfast": "Breakfast is included in every room rate, served from 6.30 to 10.30 am at the Lagoon restaurant.",
+    "airport": "A car from Bandaranaike International Airport costs LKR 9,500 each way, for up to three guests. Book it at least 24 hours ahead.",
+    "parking": "Parking is free for guests, in the basement.",
+    "pool": "The rooftop pool is open from 7 am to 9 pm. Towels are at the pool.",
+    "cancellation": "Cancelling is free until 48 hours before check-in. After that, the first night is charged.",
+    "children": "Children under 6 stay free in their parents' room. An extra bed costs LKR 6,000 a night.",
+    "pets": "Pets are not allowed, except assistance dogs.",
+    "wifi": "Wi-Fi is free everywhere in the hotel."
+  },
+  "bookings": [
+    {"reference": "LB-10388", "guest_name": "Sarah Fernando", "phone": "0719876543", "room_type": "standard",
+     "check_in": "2026-12-05", "check_out": "2026-12-07", "guests": 1, "status": "confirmed", "total": 56000},
+    {"reference": "LB-10399", "guest_name": "Ruwan Silva", "phone": "0765554321", "room_type": "standard",
+     "check_in": "2026-12-02", "check_out": "2026-12-04", "guests": 2, "status": "confirmed", "total": 56000},
+    {"reference": "LB-10421", "guest_name": "Nimal Perera", "phone": "0771112233", "room_type": "deluxe",
+     "check_in": "2026-12-20", "check_out": "2026-12-23", "guests": 2, "status": "confirmed", "total": 157500}
+  ],
+  "next_reference": 10450
+}
