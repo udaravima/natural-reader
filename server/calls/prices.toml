@@ -56,6 +56,10 @@ source = "https://aistudio.google.com/docs/pricing"
 official = true
 note = "Paid Standard tier, text input; the free tier the benchmark ran on costs nothing but allows 15 requests a minute"
 
+[model."ollama:gemma4:e4b"]
+local = true
+note = "Runs on the server's own CPU through Ollama: no fee. Ollama's cloud models (names ending -cloud) are billed and have no price here"
+
 [voice.kokoro]
 local = true
 note = "Runs on the server's own CPU: no fee"

@@ -70,6 +70,7 @@ async def google_requests(recognizer: str, config, chunks: AsyncIterator[bytes])
 class GoogleStreamEars:
     needs_audio = True
     where = "Google Cloud"
+    streams = True   # a phone line could stream the whole call to it (the Cost section says what that costs)
 
     def __init__(self, recognizer: str, model: str, env: Mapping[str, str], *, chunk_s: float = 0.1,
                  tail_s: float = 0.2) -> None:
@@ -137,6 +138,7 @@ class GoogleStreamEars:
 class OpenAIRealtimeEars:
     needs_audio = True
     where = "OpenAI"
+    streams = True   # a phone line could stream the whole call to it (the Cost section says what that costs)
 
     def __init__(self, model: str, env: Mapping[str, str], *, url: str = REALTIME_URL, chunk_s: float = 0.1,
                  tail_s: float = 0.2, timeout_s: float = 30.0) -> None:

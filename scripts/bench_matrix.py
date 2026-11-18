@@ -67,6 +67,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--keying", default="1.0,0.4", help="seconds before the first key, seconds a key (hash included)")
     p.add_argument("--still-after", type=float, default=1.5, help="silence after a filler before 'still checking'")
     p.add_argument("--no-smart-turn", action="store_true", help="skip the end-of-turn model")
+    p.add_argument("--warm-model", action="store_true",
+                   help="before the model stage, one turn ('Hello.') with the scenario's instructions and tools and "
+                        "the same settings: a local model is loaded and has read them, as on a line already "
+                        "answering calls")
     p.add_argument("--prices", type=Path, help="a price list (default server/calls/prices.toml)")
     p.add_argument("--out", type=Path)
     return p.parse_args(argv)
@@ -106,7 +110,8 @@ async def run(args: argparse.Namespace) -> int:
     from server import keepalive
     from server.calls import matrix
     from server.calls.agent import CallAgent
-    from server.calls.cost import hearing_usd, load_prices, model_usd, price_for, voice_usd
+    from server.calls.cost import (hearing_usd, load_prices, model_shortfall, model_usd, per_1000_minutes, price_for,
+                                   voice_usd)
     from server.calls.endturn import speech_bounds, to_16k
     from server.calls.fillers import FillerBook
     from server.calls.keypad import keypad_tool
@@ -228,6 +233,15 @@ async def run(args: argparse.Namespace) -> int:
         return 2
 
     # ---- 2. the model, through each hearing's transcripts ----
+    if args.warm_model:   # same settings as the calls (no context size or keep-alive unless Talk sends one), or
+        # Ollama would load the model again for the first call
+        warm_tools = scenario.toolset((keypad_tool(scripts[0].keys),) if args.keypad else ())
+        warm_agent = CallAgent(paced, args.model, scenario, warm_tools, settings=CallSettings(think=args.think),
+                               max_steps=args.max_steps, first_clause_chars=args.first_clause, clock=clock,
+                               keypad=args.keypad)
+        warm = await warm_agent.turn("Hello.")
+        args.warmed_s = warm.whole_s
+        say(f"\nModel warmed: {warm.whole_s:.1f} s for one turn{f' ({warm.error})' if warm.error else ''}")
     llm_rows, call_rows = [], []
     turns_by: dict[str, list[dict]] = {}
     for spec in ears_ok:
@@ -287,6 +301,7 @@ async def run(args: argparse.Namespace) -> int:
     voiced: dict[str, dict[tuple[str, int, int], tuple[float, float]]] = {}
     pieces_audio: dict[str, dict[tuple[str, int, int], bytes | None]] = {}
     greetings: dict[str, bytes | None] = {}
+    greeting_s: dict[str, float | None] = {}
     for spec, voice in voices.items():
         folder = recordings / slug(spec)
         folder.mkdir(parents=True, exist_ok=True)
@@ -294,6 +309,7 @@ async def run(args: argparse.Namespace) -> int:
         await throttle.wait()
         g = await voice.speak(scenario.agent.greeting)   # the greeting also warms the voice up
         greetings[spec] = g.wav
+        greeting_s[spec] = g.audio_s if g.wav else None
         if g.wav:
             (folder / "greeting.wav").write_bytes(g.wav)
         line_audio[spec] = {}
@@ -358,10 +374,16 @@ async def run(args: argparse.Namespace) -> int:
     model_price = price_for(prices, "model", args.model)
     pair_rows, summary, cost_rows = [], [], []
     heard_timelines: dict[str, dict[tuple[str, int], dict]] = {}
+    call_s: dict[tuple[str, str], dict[str, float]] = {}   # (hearing, voice) -> call -> seconds, as recorded
+
+    def caller_s(key: tuple[str, int]) -> float:   # the recorded call keeps the caller's clip to their last word
+        end = clip_info[key]["speech_end_s"]
+        return end if end > 0 else clip_info[key]["clip_s"]
     passed_by = {s: sum(r["passed"] for r in call_rows if r["hearing"] == s) for s in ears_ok}
     for h in ears_ok:
         for v, voice in voices.items():
             rows = []
+            ends: dict[tuple[str, int], float] = {}
             books: dict[tuple[str, str], FillerBook] = {}
             for t in ref_turns:
                 key = (t["call"], t["turn"])
@@ -370,6 +392,7 @@ async def run(args: argparse.Namespace) -> int:
                 fixed = timeline(h, v, t, silence, books.setdefault(("fixed", t["call"]), FillerBook(scenario.agent)))
                 smart = timeline(h, v, t, smart_wait, books.setdefault(("smart", t["call"]),
                                                                        FillerBook(scenario.agent)))
+                ends[key] = smart["end_s"]
                 if h == reference:
                     heard_timelines.setdefault(v, {})[key] = smart
                 kinds = [x["kind"] for x in smart["sounds"]]
@@ -392,6 +415,14 @@ async def run(args: argparse.Namespace) -> int:
 
             # cost per call: this hearing's audio and conversation, this voice on the voiced conversation
             hearing_price, voice_price = price_for(prices, "hearing", h), price_for(prices, "voice", v)
+            seconds = call_s[(h, v)] = {
+                script.id: matrix.call_seconds(greeting_s.get(v), [
+                    (caller_s((script.id, n)), ends.get((script.id, n), silence))
+                    for n in range(1, len(lines[script.id]) + 1)]) for script in scripts}
+            minutes = [x / 60 for x in seconds.values()]
+            gap = model_shortfall([r for r in llm_rows if r["hearing"] == h], sum(len(lines[s.id]) for s in scripts))
+            streams = bool(getattr(all_ears[h], "streams", False))
+            whole = [hearing_usd(hearing_price, x) for x in seconds.values()] if streams else []
             per_call = []
             for script in scripts:
                 hear = [hearing_usd(hearing_price, r["billed_s"]) for r in asr_rows
@@ -411,6 +442,13 @@ async def run(args: argparse.Namespace) -> int:
             cost_rows.append({"hearing": h, "voice": v, "hearing_usd_per_call": mean_part[0],
                               "model_usd_per_call": mean_part[1], "voice_usd_per_call": mean_part[2],
                               "total_usd_per_call": total, "usd_per_1000_calls": None if total is None else 1000 * total,
+                              "call_minutes": statistics.mean(minutes), "call_minutes_min": min(minutes),
+                              "call_minutes_max": max(minutes),
+                              "usd_per_1000_minutes": per_1000_minutes(total, statistics.mean(minutes)),
+                              "model_turns": gap["turns"], "model_turns_failed": gap["failed"],
+                              "model_first_error": gap["first_error"], "streams": streams,
+                              "hearing_whole_call_usd_per_1000": (1000 * statistics.mean(whole)
+                                                                  if whole and None not in whole else None),
                               "unpriced": ", ".join(name for name, part in zip(("hearing", "model", "voice"), mean_part)
                                                     if part is None)})
 
@@ -431,8 +469,26 @@ async def run(args: argparse.Namespace) -> int:
                             "voice_first_piece_median_s": med(r["voice_first_s"] for r in rows),
                             "hearing_word_errors_pct": 100 * mean_wer[h],
                             "calls_passed": f"{passed_by[h]}/{len(scripts)}",
-                            "usd_per_1000_calls": cost_rows[-1]["usd_per_1000_calls"]})
+                            "usd_per_1000_calls": cost_rows[-1]["usd_per_1000_calls"],
+                            "cost_lower_bound": cost_rows[-1]["model_turns_failed"] > 0})
     summary.sort(key=lambda r: (r["first_sound_smart_median_s"] is None, r["first_sound_smart_median_s"] or 0))
+    ref_talk = [r for r in llm_rows if r["hearing"] == reference]
+
+    def per_call_mean(of) -> float:
+        return statistics.mean(of(script) for script in scripts)
+    shape = {"reference": reference, "calls": len(scripts),
+             "caller_turns": per_call_mean(lambda s: len(lines[s.id])),
+             "caller_s": per_call_mean(lambda s: sum(clip_info[(s.id, n)]["clip_s"]
+                                                     for n in range(1, len(lines[s.id]) + 1))),
+             "agent_chars": per_call_mean(lambda s: sum(len(p["text"]) for t in ref_turns if t["call"] == s.id
+                                                        for p in t["pieces"])),
+             "prompt_tokens": per_call_mean(lambda s: sum(r["prompt_tokens"] for r in ref_talk if r["call"] == s.id)),
+             "reply_tokens": per_call_mean(lambda s: sum(r["reply_tokens"] for r in ref_talk if r["call"] == s.id)),
+             "voices": {v: {"agent_s": per_call_mean(lambda s, v=v: sum(
+                                audio for (call, _, _), (_, audio) in voiced[v].items() if call == s.id)),
+                            "minutes": statistics.mean(call_s[(reference, v)].values()) / 60,
+                            "min_minutes": min(call_s[(reference, v)].values()) / 60,
+                            "max_minutes": max(call_s[(reference, v)].values()) / 60} for v in voices}}
     price_rows = []
     for stage, specs in (("hearing", ears_ok), ("model", [args.model]), ("voice", list(voices))):
         for spec in specs:
@@ -482,28 +538,22 @@ async def run(args: argparse.Namespace) -> int:
     (out / "report.md").write_text(report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows,
                                           call_rows, ears_ok, voices, silence, misheard_words, eot_rows=eot_rows,
                                           pair_rows=pair_rows, line_rows=line_rows, cost_rows=cost_rows,
-                                          price_rows=price_rows), encoding="utf-8")
+                                          price_rows=price_rows, shape=shape), encoding="utf-8")
     say(f"\nReport: {out / 'report.md'}\nWorkbook: {out / 'results.xlsx'}\nRecordings: {recordings}")
     return 0
 
 
-def short(spec: str) -> str:
-    return spec.split("/recognizers/")[-1] if "/recognizers/" not in spec else \
-        f"{spec.split(':')[0]}:{spec.split('/locations/')[1].split('/')[0]}/{spec.split('/recognizers/')[-1]}"
-
-
-def money(v: float | None, digits: int = 2) -> str:
-    return "–" if v is None else f"${v:,.{digits}f}"
-
-
 def report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows, call_rows, ears_ok, voices, silence,
-           misheard_words, *, eot_rows, pair_rows, line_rows, cost_rows, price_rows) -> str:
+           misheard_words, *, eot_rows, pair_rows, line_rows, cost_rows, price_rows, shape) -> str:
     from server.calls import matrix
+    from server.calls.matrix import money, short
     smart = bool(eot_rows)
     lines = [f"# Hearing x voice benchmark: {scenario.name}", "",
              f"**Model** {args.model} · **When** {datetime.now():%Y-%m-%d %H:%M} · **Fixed end-of-turn silence** "
              f"{silence:.2f} s · **End-of-turn model** {'Smart Turn v3.2' if smart else 'off'} · **Keypad** "
-             f"{'on' if args.keypad else 'off'} · **Calls** {len({r['call'] for r in call_rows})} · voiced "
+             f"{'on' if args.keypad else 'off'} · **Model warmed first** "
+             f"{f'yes ({args.warmed_s:.1f} s)' if getattr(args, 'warmed_s', None) is not None else 'no'} · "
+             f"**Calls** {len({r['call'] for r in call_rows})} · voiced "
              f"conversation: the one heard by `{short(reference)}`", "",
              "The caller's wait is the time from their last word to the agent's first sound. It is composed from "
              "stages each measured once: the end-of-turn wait, hearing, the model's first speakable piece, voicing "
@@ -519,9 +569,12 @@ def report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows, c
         lines.append(f"| {short(r['hearing'])} | {r['voice']} | {fmt(r['first_sound_no_fillers_median_s'])} s | "
                      f"{fmt(r['first_sound_fixed_median_s'])} s | {fmt(r['first_sound_smart_median_s'])} s | "
                      f"{fmt(r['first_answer_smart_median_s'])} s | {fmt(r['dead_air_smart_median_s'])} s | {r['band']} | "
-                     f"{r['hearing_word_errors_pct']:.1f}% | {r['calls_passed']} | {money(r['usd_per_1000_calls'])} |")
+                     f"{r['hearing_word_errors_pct']:.1f}% | {r['calls_passed']} | "
+                     f"{money(r['usd_per_1000_calls'], at_least=r['cost_lower_bound'])} |")
     lines += ["", "Medians over the turns. The first three columns are the first sound; the last timing columns "
-              "use the end-of-turn model" + ("" if smart else " (off in this run: the fixed silence)") + ".", ""]
+              "use the end-of-turn model" + ("" if smart else " (off in this run: the fixed silence)") + ". A call "
+              "here is one scripted call, greeting to goodbye; Cost below says how long one lasts and what is "
+              "billed.", ""]
     if smart:
         waits = [r["smart_wait_s"] for r in eot_rows]
         lines += ["## End of turn", "",
@@ -557,17 +610,11 @@ def report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows, c
                          f"{sum(r['still_lines'] for r in mine)} | {sum(r['keypad_prompts'] for r in mine)} | "
                          f"{sum(r['keying_s'] for r in mine):.1f} s |")
         lines.append("")
-    lines += ["## Cost", "",
-              "Per call (the mean over the calls) and per 1,000 calls, at the paid tier. Hearing is the audio sent; "
-              "the model is the tokens it reported for the conversation this hearing produced; the voice is the "
-              "voiced conversation's pieces. The greeting, fillers and keypad lines are recorded once, so they are "
-              "not in a call's cost. Local engines cost nothing but use the server's CPU.", "",
-              "| Hearing | Voice | Hearing | Model | Voice | Per call | Per 1,000 calls |", "|---|---|---|---|---|---|---|"]
-    for r in sorted(cost_rows, key=lambda r: (r["total_usd_per_call"] is None, r["total_usd_per_call"] or 0)):
-        lines.append(f"| {short(r['hearing'])} | {r['voice']} | {money(r['hearing_usd_per_call'], 4)} | "
-                     f"{money(r['model_usd_per_call'], 4)} | {money(r['voice_usd_per_call'], 4)} | "
-                     f"{money(r['total_usd_per_call'], 4)} | {money(r['usd_per_1000_calls'])} |")
-    lines += ["", "| Stage | Engine | Price | Source | Provider's own | Note |", "|---|---|---|---|---|---|"]
+    lines += matrix.cost_section(cost_rows, shape)
+    lines += ["", "Hearing is the audio sent, the model the tokens it reported for the conversation that hearing "
+              "produced, the voice the voiced conversation's pieces. Local engines cost nothing but use the server's "
+              "CPU.", "",
+              "| Stage | Engine | Price | Source | Provider's own | Note |", "|---|---|---|---|---|---|"]
     for r in price_rows:
         if r.get("unpriced"):
             price = "no price: unknown"

@@ -34,8 +34,13 @@ All notable changes to this project will be documented in this file.
   hears every caller clip beside Talk's fixed 0.7 s silence, and the report
   counts where it would cut the caller off; two streaming hearing engines
   (`google-stream:` over gRPC, `openai-rt:` over OpenAI's Realtime API); and a
-  Cost sheet per stage and per 1,000 calls from a price list that names each
-  price's source (`server/calls/prices.toml`). Benchmark only: Talk is unchanged.
+  Cost sheet per stage, per 1,000 calls and per 1,000 minutes from a price list
+  that names each price's source (`server/calls/prices.toml`). The report says
+  what one call is (turns, seconds of speech, characters, tokens, and its
+  length with each voice: about 1.4 minutes, so 1,000 calls is not 1,000
+  minutes), marks a cost as a lower bound when the model failed turns, and
+  says what a streaming engine would cost on a whole phone line. Benchmark
+  only: Talk is unchanged.
 
 ### Fixed
 

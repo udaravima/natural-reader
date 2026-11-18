@@ -65,3 +65,21 @@ def voice_usd(price: dict | None, chars: int, audio_s: float) -> float | None:
     if "per_m_chars" in price:
         return chars * price["per_m_chars"] / 1e6
     return (chars / 4 * price["text_per_m"] + audio_s * price["audio_tokens_per_s"] * price["audio_per_m"]) / 1e6
+
+
+def per_1000_minutes(usd_per_call: float | None, call_minutes: float | None) -> float | None:
+    """What 1,000 minutes of these calls cost: a call's cost spread over how long it lasts. A call's length counts
+    every wait as well as speech, so a slower model makes this smaller while the cost of a call stays the same."""
+    if usd_per_call is None or not call_minutes:
+        return None
+    return 1000 * usd_per_call / call_minutes
+
+
+def model_shortfall(rows: list[dict], expected_turns: int) -> dict[str, Any]:
+    """How many of a conversation's caller turns the model did not answer: the ones it errored on, and the ones it
+    was never asked because nothing was heard (they have no row). The model's cost counts only the turns it
+    answered, so it is a lower bound when any failed."""
+    errors = [r["error"] for r in rows if r.get("error")]
+    answered = len(rows) - len(errors)
+    return {"turns": expected_turns, "failed": max(0, expected_turns - answered),
+            "first_error": errors[0] if errors else None}

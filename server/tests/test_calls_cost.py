@@ -2,7 +2,8 @@
 sources (spec 2026-11-17-call-bench-round2)."""
 import pytest
 
-from server.calls.cost import hearing_usd, load_prices, model_usd, price_for, voice_usd
+from server.calls.cost import (hearing_usd, load_prices, model_shortfall, model_usd, per_1000_minutes, price_for,
+                              voice_usd)
 
 
 @pytest.fixture(scope="module")
@@ -50,3 +51,22 @@ def test_every_paid_price_names_its_source_date_and_whether_it_is_the_providers_
                 continue
             assert price["source"].startswith("https://"), key
             assert price["checked"] == "2026-11-17" and isinstance(price["official"], bool), key
+
+
+def test_per_1000_minutes_spreads_a_calls_cost_over_how_long_it_lasts():
+    assert per_1000_minutes(0.02, 1.25) == pytest.approx(16.0)   # 2 cents for a 1.25-minute call
+    assert per_1000_minutes(None, 1.25) is None   # an unpriced call stays unknown
+    assert per_1000_minutes(0.02, None) is None
+    assert per_1000_minutes(0.02, 0) is None
+
+
+def test_a_turn_the_model_errored_on_or_was_never_asked_leaves_the_model_cost_short():
+    rows = [{"error": None}, {"error": "HTTP 429: busy"}, {"error": ""}, {"error": "HTTP 503: high demand"}]
+    # 5 caller turns: 2 answered, 2 errored, 1 never asked (nothing was heard, so no row)
+    assert model_shortfall(rows, 5) == {"turns": 5, "failed": 3, "first_error": "HTTP 429: busy"}
+    assert model_shortfall(rows[:1], 1) == {"turns": 1, "failed": 0, "first_error": None}
+
+
+def test_a_local_ollama_model_costs_nothing_but_a_cloud_one_is_not_assumed_free(prices):
+    assert price_for(prices, "model", "ollama:gemma4:e4b")["local"] is True
+    assert price_for(prices, "model", "ollama:gemma4:31b-cloud") is None   # Ollama's cloud bills: unknown, not free

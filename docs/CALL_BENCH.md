@@ -93,9 +93,23 @@ Design: [the round 2 spec](superpowers/specs/2026-11-17-call-bench-round2-design
   caller clip: after 0.2 s of silence it says whether the caller has finished, else the turn ends at 3 s. The
   report gives its wait beside the fixed silence, and the **cut-offs**: pauses where it would have talked over the
   caller. `--no-smart-turn` skips it;
-- costs each pair per call and per 1,000 calls (sheets Cost and Prices), from `server/calls/prices.toml`: every
-  price names its source, the date it was checked and whether it is the provider's own. An engine with no price
-  shows as unknown, not free.
+- costs each pair per call, per 1,000 calls and per 1,000 minutes (sheets Cost and Prices), from
+  `server/calls/prices.toml`: every price names its source, the date it was checked and whether it is the
+  provider's own. An engine with no price shows as unknown, not free. **A call is one scripted call, greeting to
+  goodbye, not a minute**: the report's "What one call is" table gives its caller turns, seconds of caller audio,
+  characters the voice speaks, the model's tokens, and how long a call lasts with each voice. A call's length is
+  computed per pair as the whole-call recording is built, and counts every wait, so a slower model makes calls
+  longer and the price per 1,000 minutes smaller while a call costs the same: compare pairs per call. When the
+  model failed turns of a hearing's conversation (an error, or nothing heard), that pair's model cost counts only
+  the answered turns: the report marks it **≥** (a lower bound), lists it last with the failures, and gives the
+  model's cost where every turn was answered. For the streaming engines it also says what hearing would cost if a
+  phone line streamed the whole call, both sides and every wait, rather than only the caller's turns.
+
+`--warm-model` sends one turn ("Hello.") with the scenario's instructions and tools just before the model stage,
+for a local model: Ollama loads it and reads them once, as on a line already answering calls. Cold, the first turn
+of a call on `ollama:gemma4:e4b` took 23.7 s to its first piece on a CPU (2026-11-18). The warm-up uses the calls'
+own settings (no context size or keep-alive, as Talk sends by default): a different context size would make Ollama
+load the model again. Keep-alive is Ollama's (5 minutes unless the server sets one).
 
 `--keypad` plays the calls' `caller_keypad` lines: the caller keys the phone number or booking reference
 (`[calls.keys]`) when the agent calls `collect_digits`, whose recorded instruction comes from `[agent.keypad]`.

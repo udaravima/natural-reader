@@ -121,3 +121,10 @@ async def test_the_google_stream_sends_its_config_first_then_audio_under_15_kb()
     requests = [r async for r in google_requests("projects/p/locations/l/recognizers/_", config, chunks())]
     assert requests[0].recognizer.endswith("/recognizers/_") and not requests[0].audio
     assert [len(r.audio) for r in requests[1:]] == [3200, 3200, 1000]
+
+
+def test_the_streaming_hearing_engines_say_they_stream():
+    from server.calls.voice import make_ears
+    assert make_ears("openai-rt:gpt-live-transcribe", {"SPEECH_API_KEY": "k"}).streams is True
+    assert make_ears("google-stream:projects/p/locations/us/recognizers/_@chirp_3", {}).streams is True
+    assert getattr(make_ears("text"), "streams", False) is False   # sent only each finished turn

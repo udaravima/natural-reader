@@ -120,6 +120,101 @@ def conversation(rate: int, greeting: np.ndarray | None, turns: list[dict], *, c
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
 
+
+def call_seconds(greeting_s: float | None, turns: list[tuple[float, float]], *, caller_pause_s: float = 0.4) -> float:
+    """How long a call lasts, as `conversation` records it: the greeting, then for each turn the pause, the caller
+    up to their last word and the agent's turn to its end (turn_timeline's `end_s`). `turns`: (caller seconds,
+    agent seconds)."""
+    return (greeting_s or 0.0) + sum(caller_pause_s + caller + agent for caller, agent in turns)
+
+
+def short(spec: str) -> str:
+    """An engine as the report names it: a Google recognizer by its region and id, never by its project."""
+    if "/recognizers/" not in spec:
+        return spec
+    return f"{spec.split(':')[0]}:{spec.split('/locations/')[1].split('/')[0]}/{spec.split('/recognizers/')[-1]}"
+
+
+def money(v: float | None, digits: int = 2, *, at_least: bool = False) -> str:
+    return "–" if v is None else f"{'≥ ' if at_least else ''}${v:,.{digits}f}"
+
+
+def _span(values: list[float]) -> str:
+    lo, hi = min(values), max(values)
+    return money(lo) if f"{lo:.2f}" == f"{hi:.2f}" else f"{money(lo)} to {money(hi)}"
+
+
+def _lower_bound(row: dict) -> bool:
+    return bool(row.get("model_turns_failed"))
+
+
+def cost_section(cost_rows: list[dict], shape: dict) -> list[str]:
+    """The report's Cost section: what one call is, each pair's cost per call, per 1,000 calls and per 1,000
+    minutes, and which figures are lower bounds. `shape`: the reference conversation's mean call (scripts/
+    bench_matrix.py builds it)."""
+    lines = ["## Cost", "",
+             "**\"Per 1,000 calls\" means 1,000 of the scripted calls, not 1,000 minutes.** A call runs from the "
+             "greeting to the goodbye. Its cost is the mean over the calls, at the paid tier, with no free allowance "
+             "taken off; \"per 1,000 minutes\" spreads it over how long the call lasts in this run.", "",
+             "### What one call is", "",
+             f"The conversation heard by `{short(shape['reference'])}`, the mean of {shape['calls']} "
+             f"call{'' if shape['calls'] == 1 else 's'}. Speech and "
+             "text are billed; the waits between them are not.", "",
+             "| | A call | Billed by |", "|---|---|---|",
+             f"| Caller turns | {shape['caller_turns']:.1f} | – |",
+             f"| Caller audio (the clips sent to hearing) | {shape['caller_s']:.1f} s | hearing, by the minute |",
+             f"| Agent text, spoken by the voice | {shape['agent_chars']:,.0f} characters | the voice: Chirp by the "
+             "character, Gemini-TTS by tokens |",
+             f"| Model text | {shape['prompt_tokens']:,.0f} tokens read, {shape['reply_tokens']:,.0f} written | the "
+             "model, by the million tokens |", "",
+             "| Voice | Agent speech a call | Call length (mean, shortest to longest) |", "|---|---|---|"]
+    for v, x in shape["voices"].items():
+        lines.append(f"| {v} | {x['agent_s']:.0f} s | {x['minutes']:.2f} min ({x['min_minutes']:.2f} to "
+                     f"{x['max_minutes']:.2f}) |")
+    lines += ["", "### What each pair costs", "",
+              "| Hearing | Voice | Call length | Hearing | Model | Voice | Per call | Per 1,000 calls | "
+              "Per 1,000 minutes |", "|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(cost_rows, key=lambda r: (_lower_bound(r), r["total_usd_per_call"] is None,
+                                              r["total_usd_per_call"] or 0)):
+        low = _lower_bound(r)
+        length = "–" if r.get("call_minutes") is None else f"{r['call_minutes']:.2f} min"
+        lines.append(f"| {short(r['hearing'])} | {r['voice']} | {length} | {money(r['hearing_usd_per_call'], 4)} | "
+                     f"{money(r['model_usd_per_call'], 4, at_least=low)} | {money(r['voice_usd_per_call'], 4)} | "
+                     f"{money(r['total_usd_per_call'], 4, at_least=low)} | "
+                     f"{money(r['usd_per_1000_calls'], at_least=low)} | "
+                     f"{money(r.get('usd_per_1000_minutes'), at_least=low)} |")
+    lows = [r for r in cost_rows if _lower_bound(r)]
+    if lows:
+        lines += ["", "**≥ marks a lower bound.** The model didn't answer some caller turns of that hearing's "
+                  "conversation (it errored, or nothing was heard), so its cost counts only the turns it answered; a "
+                  "whole call would cost more:", ""]
+        for h in dict.fromkeys(r["hearing"] for r in lows):
+            r = next(x for x in lows if x["hearing"] == h)
+            error = " ".join((r.get("model_first_error") or "").split())
+            why = f"first error: {error[:80]}{'…' if len(error) > 80 else ''}" if error else "nothing was heard"
+            lines.append(f"- `{short(h)}`: {r['model_turns_failed']} of {r['model_turns']} turns ({why})")
+        full = [1000 * r["model_usd_per_call"] for r in cost_rows
+                if not _lower_bound(r) and r.get("model_usd_per_call") is not None]
+        lines += ["", f"Where every turn was answered, the model cost {_span(full)} per 1,000 calls: use that to "
+                  "compare these pairs." if full else
+                  "No hearing had every turn answered: rerun before comparing what the model costs."]
+    streaming = [r for r in cost_rows if r.get("streams") and r.get("hearing_whole_call_usd_per_1000") is not None]
+    if streaming:
+        lines += ["", "**Hearing here is sent only the caller's turns.** A phone line that streams the whole call to "
+                  "a streaming engine, both sides and every wait, pays for all of it. Hearing alone would then cost:",
+                  ""]
+        for h in dict.fromkeys(r["hearing"] for r in streaming):
+            mine = [r for r in streaming if r["hearing"] == h]
+            turns = [1000 * r["hearing_usd_per_call"] for r in mine if r.get("hearing_usd_per_call") is not None]
+            lines.append(f"- `{short(h)}`: {_span([r['hearing_whole_call_usd_per_1000'] for r in mine])} per 1,000 "
+                         f"calls instead of {_span(turns) if turns else '–'}")
+    lines += ["", "A call's length counts every wait as well as speech, so a slower model or voice makes calls "
+              "longer and the price per 1,000 minutes smaller while a call costs the same. Compare pairs per call; "
+              "per 1,000 minutes is for comparing with prices quoted by the minute.", "",
+              "Not included: the phone line, the server's CPU for local engines, and the greeting, fillers and keypad "
+              "lines, which are recorded once."]
+    return lines
+
 def _columns(rows: list[dict]) -> list[str]:
     return list(dict.fromkeys(k for r in rows for k in r))
 

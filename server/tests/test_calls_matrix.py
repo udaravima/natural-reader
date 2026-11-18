@@ -8,8 +8,8 @@ import openpyxl
 import pytest
 import soundfile as sf
 
-from server.calls.matrix import (BANDS, REFERENCES, band, compose, conversation, read_wav, write_csv,
-                                 write_xlsx)
+from server.calls.matrix import (BANDS, REFERENCES, band, call_seconds, compose, conversation, cost_section, money,
+                                 read_wav, write_csv, write_xlsx)
 
 
 @pytest.mark.parametrize("seconds, label", [(0.4, "human-like"), (0.7, "natural"), (1.0, "acceptable"),
@@ -90,3 +90,77 @@ def test_caller_clips_are_found_by_what_they_say(tmp_path):
     assert keyed[2] not in found                               # the keypad line was never recorded
     assert found[hotel.call("book-deluxe").caller[2]] == tmp_path / "book-deluxe-3.wav"
     assert clip_sources(hotel.calls, None) == {}
+
+
+def test_a_calls_length_is_the_length_of_the_recording_conversation_builds():
+    rate = 100
+    turns = [{"caller": np.ones(130, dtype=np.float32), "gap_s": 0.0, "pieces": [np.ones(420, dtype=np.float32)],
+              "stalls_s": []},
+             {"caller": np.ones(70, dtype=np.float32), "gap_s": 0.0, "pieces": [np.ones(300, dtype=np.float32)],
+              "stalls_s": []}]
+    built = conversation(rate, np.ones(250, dtype=np.float32), turns)
+    # greeting 2.5 s; each turn: the 0.4 s pause, the caller to their last word, the agent's turn to its end
+    assert call_seconds(2.5, [(1.3, 4.2), (0.7, 3.0)]) == pytest.approx(len(built) / rate)
+    assert call_seconds(None, [(1.0, 2.0)]) == pytest.approx(3.4)   # no greeting recorded
+
+
+def test_money_marks_a_lower_bound():
+    assert money(1.4) == "$1.40"
+    assert money(1.4, at_least=True) == "≥ $1.40"
+    assert money(None, at_least=True) == "–"
+
+
+def cost_row(**kw):
+    base = {"hearing": "whisper:small.en", "voice": "kokoro:af_heart", "hearing_usd_per_call": 0.0,
+            "model_usd_per_call": 0.002754, "voice_usd_per_call": 0.0, "total_usd_per_call": 0.002754,
+            "usd_per_1000_calls": 2.75, "call_minutes": 1.35, "call_minutes_min": 0.89, "call_minutes_max": 2.3,
+            "usd_per_1000_minutes": 2.04, "model_turns": 19, "model_turns_failed": 0, "model_first_error": None,
+            "streams": False, "hearing_whole_call_usd_per_1000": None, "unpriced": ""}
+    return base | kw
+
+
+SHAPE = {"reference": "whisper:small.en", "calls": 6, "caller_turns": 3.17, "caller_s": 13.3, "agent_chars": 470,
+         "prompt_tokens": 9700, "reply_tokens": 220,
+         "voices": {"kokoro:af_heart": {"agent_s": 31.0, "minutes": 1.35, "min_minutes": 0.89, "max_minutes": 2.3}}}
+
+
+def test_the_cost_section_says_a_call_is_not_a_minute_and_what_one_call_is():
+    text = "\n".join(cost_section([cost_row()], SHAPE))
+    assert "not 1,000 minutes" in text
+    assert "| Caller turns | 3.2 |" in text
+    assert "| Caller audio (the clips sent to hearing) | 13.3 s |" in text
+    assert "| Agent text, spoken by the voice | 470 characters |" in text
+    assert "| Model text | 9,700 tokens read, 220 written |" in text
+    assert "| kokoro:af_heart | 31 s | 1.35 min (0.89 to 2.30) |" in text
+    assert ("| whisper:small.en | kokoro:af_heart | 1.35 min | $0.0000 | $0.0028 | $0.0000 | $0.0028 | $2.75 | "
+            "$2.04 |") in text
+    assert "≥" not in text   # nothing failed, so nothing is a lower bound
+
+
+def test_a_hearing_whose_model_turns_failed_is_a_lower_bound_listed_last_with_the_full_model_cost():
+    short = cost_row(hearing="openai:gpt-transcribe", model_usd_per_call=0.0014, total_usd_per_call=0.0014,
+                     usd_per_1000_calls=1.40, usd_per_1000_minutes=1.04, model_turns_failed=10,
+                     model_first_error="HTTP 429: This model is busy")
+    text = "\n".join(cost_section([short, cost_row()], SHAPE))
+    rows = [line for line in text.splitlines() if line.startswith(("| openai:", "| whisper:"))]
+    assert rows[0].startswith("| whisper:")   # complete costs first, though this one is dearer
+    assert "≥ $0.0014" in rows[1] and "≥ $1.40" in rows[1] and "≥ $1.04" in rows[1]
+    assert "`openai:gpt-transcribe`: 10 of 19 turns (first error: HTTP 429: This model is busy)" in text
+    assert "the model cost $2.75 per 1,000 calls" in text   # where every turn was answered
+
+
+def test_no_hearing_with_every_turn_answered_says_to_rerun():
+    short = cost_row(model_turns_failed=19, model_first_error="HTTP 429: busy")
+    assert "No hearing had every turn answered" in "\n".join(cost_section([short], SHAPE))
+
+
+def test_a_streaming_hearing_says_what_streaming_the_whole_call_would_cost():
+    row = cost_row(hearing="google-stream:projects/p/locations/us/recognizers/_@chirp_3", streams=True,
+                   hearing_usd_per_call=0.0041, hearing_whole_call_usd_per_1000=21.6)
+    text = "\n".join(cost_section([row], SHAPE))
+    assert "`google-stream:us/_@chirp_3`: $21.60 per 1,000 calls instead of $4.10" in text
+    assert "projects/p" not in text
+
+
+def test_a_run_of_one_call_says_call_not_calls():
+    assert "the mean of 1 call." in "\n".join(cost_section([cost_row()], SHAPE | {"calls": 1}))
