@@ -399,8 +399,16 @@ async def _chat_voice(options, env: Mapping[str, str] = os.environ) -> Check:
     except google_cloud.GoogleAuthError as e:
         return _check("chat_voice", "error", str(e))
     model = (env.get("GOOGLE_TTS_MODEL") or "").strip()
-    return _check("chat_voice", "ok", f"Google Gemini-TTS ({model}), voice {voice.voice}: the chat's replies and "
-                                      "Talk are sent to Google Cloud to be spoken.")
+    accent = chat_voice.accent_label(chat_voice.current_accent(options, env))
+    if voice.engine == "chirp":   # spec 2026-11-18-chirp-voice: Chirp has no Sinhala voice
+        said = (f"Google Chirp 3 HD, voice {voice.voice} in {accent}: the chat's replies and Talk are sent to Google "
+                "Cloud to be spoken.")
+        if model:
+            return _check("chat_voice", "ok", f"{said} Sinhala sentences are read by Gemini-TTS ({model}).")
+        return _check("chat_voice", "warn", f"{said} Sinhala sentences have no voice, since Chirp has none: set "
+                                            "GOOGLE_TTS_MODEL for Gemini-TTS to read them.")
+    return _check("chat_voice", "ok", f"Google Gemini-TTS ({model}), voice {voice.voice} in {accent}: the chat's "
+                                      "replies and Talk are sent to Google Cloud to be spoken.")
 
 
 async def _bounded(id: str, run: Callable[[], Awaitable[Check]]) -> Check:

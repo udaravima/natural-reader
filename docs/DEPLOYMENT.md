@@ -1757,8 +1757,9 @@ let the screen sleep, and with it the microphone.
 
 **Optional, and off until you configure it.** Google Cloud can hear speech in place of
 Whisper (the microphone and Talk), and speak the chat's replies and Talk in place of
-Kokoro, through Gemini-TTS. It is for languages the local models handle badly, and for
-comparing. Gemini-TTS lists Tamil as generally available and Sinhala in Preview. Documents,
+Kokoro, through Gemini-TTS or Google's quicker Chirp 3 HD voices. It is for languages the
+local models handle badly, and for comparing. Gemini-TTS lists Tamil as generally available
+and Sinhala in Preview; Chirp 3 HD speaks English and Tamil, and has no Sinhala voice. Documents,
 audiobooks, a message's **Audio** download and the browser extension keep Kokoro whatever
 you choose.
 
@@ -1771,7 +1772,9 @@ tells each person when Google reads the replies.
 ### In Google Cloud
 
 1. **APIs** (APIs & Services → Library): Cloud Speech-to-Text, Cloud Text-to-Speech and
-   Vertex AI. Gemini-TTS checks a Vertex AI permission.
+   Vertex AI. Gemini-TTS checks a Vertex AI permission. Chirp 3 HD is Text-to-Speech's own
+   voice, with no model; it was checked with a key that has Vertex AI User, so whether it
+   works without that role is untested.
 2. **A recognizer** (Speech-to-Text → Recognizers → Create), for hearing. It lives in a
    project with Cloud Speech-to-Text on, and its full name names *that* project: copy the
    name from the recognizer's page, not from another credential. (A name with the wrong
@@ -1831,11 +1834,11 @@ tells each person when Google reads the replies.
 |---|---|---|
 | `GOOGLE_APPLICATION_CREDENTIALS` | (unset) | The key file. With `startup.sh` it's a path on the host, and is mounted read-only into the container (`compose.google.yml`); the file must be readable by the backend's user (`NR_APP_UID`, 1000) |
 | `GOOGLE_SPEECH_RECOGNIZER` | (unset) | One recognizer's full name, `projects/<project>/locations/<location>/recognizers/<id>`, used while none is ticked in the console. Set (or a recognizer ticked): Google can be chosen to hear speech |
-| `GOOGLE_TTS_MODEL` | (unset) | A Gemini-TTS model, such as `gemini-2.5-flash-tts`. Set: Google can be chosen for the chat's voice |
-| `GOOGLE_TTS_VOICE` | `Kore` | One of Gemini-TTS's 30 voices, until an admin picks one |
-| `GOOGLE_TTS_LANGUAGE` | `en-US` | The language of a sentence that isn't mostly Sinhala or Tamil letters |
+| `GOOGLE_TTS_MODEL` | (unset) | A Gemini-TTS model, such as `gemini-2.5-flash-tts`. Set: Gemini-TTS can be chosen for the chat's voice, and with Chirp it reads the Sinhala sentences |
+| `GOOGLE_TTS_VOICE` | `Kore` | One of the 30 voices, until an admin picks one. Gemini-TTS and Chirp 3 HD share the names (Chirp's are `en-US-Chirp3-HD-Kore` and so on) |
+| `GOOGLE_TTS_LANGUAGE` | `en-US` | The English accent: the language of a sentence that isn't mostly Sinhala or Tamil letters, until an admin picks one in the console. Both Google voices take `en-US`, `en-GB`, `en-IN` and `en-AU` (checked 2026-11-18) |
 | `SPEECH_ENGINE` | `local` | `local`, `openai` or `google`: who hears speech until an admin chooses |
-| `CHAT_VOICE` | `kokoro` | `kokoro` or `google`: who reads the chat until an admin chooses |
+| `CHAT_VOICE` | `kokoro` | `kokoro`, `google` (Gemini-TTS) or `chirp` (Chirp 3 HD): who reads the chat until an admin chooses. Chirp can be chosen once `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_TTS_MODEL` is set |
 | `GOOGLE_TIMEOUT_S` | `30` | Seconds before "Google didn't answer" |
 | `GOOGLE_CLOUD_PROJECT` | (unset) | The project billed for the voice when the credentials don't name one (gcloud's own login, say). A service-account key names its own |
 
@@ -1850,7 +1853,9 @@ Google listed can be saved, because its location is the host the server sends it
 to. Listing needs the key to be allowed `speech.recognizers.list`; when Google refuses,
 the list says so in Google's words. Google names a recognizer's project by its number
 (`projects/123456789012/…`), not its id: the same recognizer either way; **Voice for the chat and Talk** offers
-Kokoro or Google, and with Google one voice for everyone. Both apply from the next
+Kokoro, Google Gemini-TTS or Google Chirp 3 HD, and with Google the voice and the
+**English accent** (American, British, Indian or Australian) for everyone; each person can
+pick their own of both in **Settings → Chat**. Both apply from the next
 recording or sentence, with no restart. **Admin → Overview** shows the Voice input and
 Chat voice lines, with the reason when Google refuses: a key it won't take, a missing
 role, or an API that's off, named with its project.
@@ -1874,8 +1879,10 @@ role, or an API that's off, named with its project.
   | Google (`long`) | Gemini-TTS | 7.1 s (Sinhala 6.3 s, Tamil 5.4 s) |
 
   Gemini-TTS takes 2.3 s or more for any sentence, however short, so for English the
-  quicker mix is Google hearing with Kokoro speaking. For Sinhala and Tamil, Gemini-TTS
-  is the only voice the app has. `gemini-2.5-flash-lite-preview-tts` is about 0.4 s
+  quicker mix is Google hearing with Kokoro speaking. **Chirp 3 HD** makes a sentence in
+  0.6–0.8 s (the call benchmark, 2026-11-17, and a live check, 2026-11-18); Talk's first
+  sound with Chirp hasn't been measured yet. For Tamil, Chirp speaks too; for Sinhala,
+  Gemini-TTS is the only voice the app has. `gemini-2.5-flash-lite-preview-tts` is about 0.4 s
   quicker per sentence, and is a Preview model.
 - **Talk's language:** the person's own **Speech language** when they chose one, else
   `SPEECH_WINDOW_LANGUAGE` (`en`). **So on Auto every Talk clip is sent as English**, and
@@ -1886,6 +1893,17 @@ role, or an API that's off, named with its project.
   from its letters: mostly Sinhala is `si-LK`, mostly Tamil `ta-IN`, anything else
   `GOOGLE_TTS_LANGUAGE`. If Google fails, the sentence is skipped and the person sees
   Google's reason; there is no silent fallback to Kokoro.
+- **The English accent:** English sentences are read in the admin's accent, or the person's
+  own (**Settings → Chat → Reply accent**); Sinhala and Tamil sentences are unaffected. With
+  Chirp the accent is a different voice (`en-IN-Chirp3-HD-Kore`); with Gemini-TTS it is the
+  language code the sentence is sent with. Google accepted all four codes for both, but
+  whether Gemini-TTS's accent changes audibly is for the ear to judge.
+- **Chirp and Sinhala:** with Chirp, a Sinhala sentence is read by Gemini-TTS in the same
+  voice when `GOOGLE_TTS_MODEL` is set. When it isn't, nothing is sent, the person sees
+  "Google's Chirp voices don't speak Sinhala, and no other Google voice is set up for it",
+  and the Overview's Chat voice line warns. A piece that mixes languages (the **Hear it**
+  sample, in English, Sinhala and Tamil) is spoken a language at a time, one call each,
+  and joined.
 - **Each person's voice:** the admin's voice is the default, and each person can pick
   another of Google's under **Settings → Chat → Reply voice**, after **Hear it**: a short
   sample in English, Sinhala and Tamil, fetched from Google once per voice per session

@@ -369,6 +369,52 @@ describe('SettingsDialog — the context size the server will use (admin console
       play.mockRestore();
     });
 
+    it('with Chirp, says Google reads the replies and offers the same Reply voices', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/chat/voice'
+        ? { ok: true, json: async () => ({ ...GOOGLE, engine: 'chirp' }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat({ googleVoice: '', setGoogleVoice: vi.fn() })} />);
+      expect(await screen.findByText(/Replies and Talk are read by Google's voice Kore/)).toBeTruthy();
+      const select = await screen.findByRole('combobox', { name: 'Reply voice' });
+      expect([...select.options].map((o) => o.textContent)).toEqual(['Default (Kore)', 'Kore', 'Puck', 'Zephyr']);
+    });
+
+    // Spec 2026-11-18-chirp-voice: each person may pick the English accent too.
+    const ACCENTS = [{ code: 'en-US', label: 'American English' }, { code: 'en-GB', label: 'British English' },
+      { code: 'en-IN', label: 'Indian English' }, { code: 'en-AU', label: 'Australian English' }];
+    const accentAnswers = () => {
+      apiFetch.mockImplementation(async (h, p, path, opts) => {
+        if (path === '/v1/chat/voice' && opts?.method === 'POST') return { ok: true, json: async () => ({ audio_base64: 'UklGRg==' }) };
+        if (path === '/v1/chat/voice') return { ok: true, json: async () => ({ ...GOOGLE, engine: 'chirp', accent: 'en-IN', accents: ACCENTS }) };
+        return { ok: false, status: 404, json: async () => ({}) };
+      });
+    };
+
+    it('offers the English accents with the admin\'s as Default, and keeps the person\'s pick', async () => {
+      accentAnswers();
+      const setGoogleAccent = vi.fn();
+      render(<SettingsDialog {...chat({ googleVoice: '', setGoogleVoice: vi.fn(), googleAccent: '', setGoogleAccent })} />);
+      const select = await screen.findByRole('combobox', { name: 'Reply accent' });
+      expect([...select.options].map((o) => o.textContent)).toEqual(
+        ['Default (Indian English)', 'American English', 'British English', 'Indian English', 'Australian English']);
+      fireEvent.change(select, { target: { value: 'en-GB' } });
+      expect(setGoogleAccent).toHaveBeenCalledWith('en-GB');
+    });
+
+    it('Hear it plays the sample in the person\'s accent', async () => {
+      const { resetVoiceSamplesForTests } = await import('../../lib/speech/voiceSample');
+      resetVoiceSamplesForTests();
+      accentAnswers();
+      URL.createObjectURL = vi.fn(() => 'blob:sample');
+      const play = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockImplementation(async () => {});
+      render(<SettingsDialog {...chat({ googleVoice: 'Puck', setGoogleVoice: vi.fn(), googleAccent: 'en-AU', setGoogleAccent: vi.fn() })} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Hear Puck' }));
+      await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+      const body = JSON.parse(posts()[0][3].body);
+      expect([body.google_voice, body.google_accent]).toEqual(['Puck', 'en-AU']);
+      play.mockRestore();
+    });
+
     it('says nothing of the kind with Kokoro', async () => {
       apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/chat/voice'
         ? { ok: true, json: async () => ({ engine: 'kokoro', voice: null, where: 'this server' }) }

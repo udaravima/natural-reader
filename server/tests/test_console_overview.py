@@ -860,3 +860,33 @@ async def test_google_with_credentials_that_dont_work_is_an_error_in_words(db_co
     monkeypatch.setattr(google_cloud, "access_token", token)
     c = await _chat_voice_check(db_conn, {"CHAT_VOICE": "google", "GOOGLE_TTS_MODEL": "gemini-2.5-flash-tts"})
     assert c.state == "error" and "service-account key" in c.summary
+
+
+async def _chirp_check(db_conn, monkeypatch, env):
+    from server import google_cloud
+
+    async def token():
+        return "t", "p"
+    monkeypatch.setattr(google_cloud, "access_token", token)
+    return await _chat_voice_check(db_conn, {"CHAT_VOICE": "chirp", "GOOGLE_APPLICATION_CREDENTIALS": "/k.json", **env})
+
+
+async def test_chirp_says_its_voice_and_who_reads_sinhala(db_conn, monkeypatch):
+    c = await _chirp_check(db_conn, monkeypatch, {"GOOGLE_TTS_MODEL": "gemini-2.5-flash-lite-preview-tts",
+                                                  "GOOGLE_TTS_VOICE": "Puck"})
+    assert c.state == "ok"
+    assert "Chirp 3 HD" in c.summary and "Puck" in c.summary and "Google Cloud" in c.summary
+    assert "Sinhala" in c.summary and "gemini-2.5-flash-lite-preview-tts" in c.summary
+
+
+async def test_chirp_without_gemini_tts_warns_that_sinhala_has_no_voice(db_conn, monkeypatch):
+    c = await _chirp_check(db_conn, monkeypatch, {})
+    assert c.state == "warn" and "Chirp 3 HD" in c.summary
+    assert "Sinhala" in c.summary and "GOOGLE_TTS_MODEL" in c.summary
+
+
+
+async def test_the_overview_names_the_english_accent(db_conn, monkeypatch):
+    c = await _chirp_check(db_conn, monkeypatch, {"GOOGLE_TTS_MODEL": "gemini-2.5-flash-lite-preview-tts",
+                                                  "GOOGLE_TTS_LANGUAGE": "en-IN"})
+    assert "Indian English" in c.summary

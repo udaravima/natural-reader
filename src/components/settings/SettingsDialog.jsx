@@ -281,7 +281,8 @@ function useSpeechLanguages(apiHost, apiPort, canChat) {
 }
 
 // Who reads the chat's replies (spec 2026-11-03-google-speech): null until known, or for Kokoro, which reads with
-// this person's own voice; else { engine, voice, where }.
+// this person's own voice; else { engine, voice, where, voices } for Google (Gemini-TTS or Chirp 3 HD, spec
+// 2026-11-18-chirp-voice: the same voice names).
 function useChatVoice(apiHost, apiPort, canChat) {
     const [voice, setVoice] = useState(null);
     useEffect(() => {
@@ -292,7 +293,7 @@ function useChatVoice(apiHost, apiPort, canChat) {
                 const res = await apiFetch(apiHost, apiPort, '/v1/chat/voice');
                 if (!res.ok) return;
                 const body = await res.json();
-                if (!cancelled && body?.engine === 'google') setVoice(body);
+                if (!cancelled && ['google', 'chirp'].includes(body?.engine)) setVoice(body);   // Gemini-TTS or Chirp 3 HD
             } catch { /* the line stays hidden */ }
         })();
         return () => { cancelled = true; };
@@ -308,6 +309,10 @@ function ChatPanel({ theme, ch }) {
     const voices = Array.isArray(chatVoice?.voices) ? chatVoice.voices : [];
     const ownVoice = voices.includes(ch.googleVoice) ? ch.googleVoice : '';
     const replyVoice = ownVoice || chatVoice?.voice;
+    // And the English accent (spec 2026-11-18-chirp-voice): the person's own if it is one Google offers, else the admin's.
+    const accents = Array.isArray(chatVoice?.accents) ? chatVoice.accents : [];
+    const ownAccent = accents.some((a) => a.code === ch.googleAccent) ? ch.googleAccent : '';
+    const adminAccent = accents.find((a) => a.code === chatVoice?.accent)?.label ?? chatVoice?.accent;
     const [hearing, setHearing] = useState(false);
     const sampleAudio = useRef(null);
     const hearIt = async () => {
@@ -317,10 +322,11 @@ function ChatPanel({ theme, ch }) {
         const speed = ch.playbackSpeed ?? 1;
         try {
             setHearing(true);
-            const url = await voiceSample(`${voice}@${speed}`, async () => {
+            const url = await voiceSample(`${voice}@${ownAccent || 'default'}@${speed}`, async () => {
                 const res = await apiFetch(ch.apiHost, ch.apiPort, '/v1/chat/voice', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: SAMPLE_TEXT, google_voice: voice, speed }),
+                    body: JSON.stringify({ text: SAMPLE_TEXT, google_voice: voice, speed,
+                        ...(ownAccent ? { google_accent: ownAccent } : {}) }),
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const { audio_base64: b64 } = await res.json();
@@ -381,6 +387,18 @@ function ChatPanel({ theme, ch }) {
                         <p className={`text-[10px] leading-relaxed ${theme.textMuted}`}>
                             A short sample in English, Sinhala and Tamil, at your reading speed. Each voice is fetched from
                             Google once a session.
+                        </p>
+                    </Field>
+                )}
+                {chatVoice && ch.setGoogleAccent && accents.length > 0 && (
+                    <Field theme={theme} label="Reply accent">
+                        <select aria-label="Reply accent" value={ownAccent}
+                            onChange={(e) => ch.setGoogleAccent(e.target.value)} className={input}>
+                            <option value="">{`Default (${adminAccent})`}</option>
+                            {accents.map((a) => <option key={a.code} value={a.code}>{a.label}</option>)}
+                        </select>
+                        <p className={`text-[10px] leading-relaxed ${theme.textMuted}`}>
+                            How English sounds in replies and Talk. Sinhala and Tamil are read as they are.
                         </p>
                     </Field>
                 )}

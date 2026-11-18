@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Google's Chirp 3 HD voices can read the chat and Talk.** A third choice
+  under Admin → Chat options → Voice for the chat and Talk, beside Kokoro and
+  Gemini-TTS (`CHAT_VOICE=chirp` for a deployment). Chirp makes a sentence in
+  0.6–0.8 s, where Gemini-TTS takes 2.3 s or more, and it was the slowest step
+  of an all-Google call in the call benchmark. It has the same 30 voice names,
+  so the admin's voice and each person's Reply voice carry over. Chirp has no
+  Sinhala voice: a Sinhala sentence is read by Gemini-TTS when a Gemini model
+  is set, and otherwise the person is told there is no Sinhala voice and the
+  Overview warns. Text that mixes languages, such as the Hear it sample, is
+  spoken a language at a time.
+- **The English accent of Google's voices can be chosen.** American, British,
+  Indian or Australian, for Gemini-TTS and Chirp alike: the admin picks the
+  default beside Google's voice in the console (until then
+  `GOOGLE_TTS_LANGUAGE`, else American), and each person can pick their own
+  under Settings → Chat → Reply accent. Sinhala and Tamil sentences are read
+  as before.
+
 ### Fixed
 
 - **Cloud requests reuse their connections.** Every request to Google's

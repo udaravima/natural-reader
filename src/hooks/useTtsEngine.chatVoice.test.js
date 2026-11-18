@@ -52,6 +52,15 @@ describe('the chat voice', () => {
         expect(JSON.parse(apiFetch.mock.calls[1][3].body)).not.toHaveProperty('google_voice');
     });
 
+    // Spec 2026-11-18-chirp-voice: the person's own English accent for Google's voices.
+    it('a chosen English accent goes with the reply speech, and not with a document\'s', async () => {
+        const { result } = renderHook(() => useTtsEngine({ ...props, googleAccent: 'en-GB' }));
+        await result.current.synthesizeChat('Hello.');
+        expect(JSON.parse(apiFetch.mock.calls[0][3].body)).toEqual({ text: 'Hello.', voice: 'bf_emma', speed: 1.2, google_accent: 'en-GB' });
+        await result.current.synthesizeText('Page one.');
+        expect(JSON.parse(apiFetch.mock.calls[1][3].body)).not.toHaveProperty('google_accent');
+    });
+
     it('a document sentence still goes to Kokoro', async () => {
         const { result } = renderHook(() => useTtsEngine(props));
         await result.current.synthesizeText('Page one.');

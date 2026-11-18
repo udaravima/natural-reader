@@ -81,6 +81,53 @@ describe('ChatVoicePicker', () => {
     expect(bodyOf(calls('PUT')[0])).toEqual({ engine: null });
   });
 
+  // Spec 2026-11-18-chirp-voice: Chirp 3 HD, the same voices, and Sinhala read by Gemini-TTS when it is set up.
+  const CHIRP = { id: 'chirp', label: 'Google Chirp 3 HD', available: true, needs: '' };
+
+  it('switching to Chirp saves it, shows the same voices and says who reads Sinhala', async () => {
+    const showToast = mount(view({ engines: [...ENGINES, CHIRP] }),
+      (body) => view({ engines: [...ENGINES, CHIRP], engine: 'chirp', voice: 'Kore', source: 'admin', ...body }));
+    fireEvent.change(await engineSelect(), { target: { value: 'chirp' } });
+    await waitFor(() => expect(calls('PUT').length).toBe(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: 'chirp' });
+    expect((await screen.findByRole('combobox', { name: "Google's voice" })).value).toBe('Kore');
+    expect(screen.getByText(/Chirp 3 HD.*Sinhala.*Gemini-TTS \(gemini-2\.5-flash-tts\)/)).toBeTruthy();
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Google Chirp 3 HD, Kore'), 5000);
+  });
+
+  it('with Chirp and no Gemini model, says Sinhala has no voice and what would give it one', async () => {
+    mount(view({ engines: [...ENGINES, CHIRP], engine: 'chirp', voice: 'Kore', source: 'admin', model: null }));
+    expect(await screen.findByText(/Sinhala sentences have no voice.*GOOGLE_TTS_MODEL/)).toBeTruthy();
+  });
+
+  it('choosing another voice keeps Chirp and sends the voice', async () => {
+    mount(view({ engines: [...ENGINES, CHIRP], engine: 'chirp', voice: 'Kore', source: 'admin' }),
+      (body) => view({ engines: [...ENGINES, CHIRP], ...body, source: 'admin' }));
+    fireEvent.change(await screen.findByRole('combobox', { name: "Google's voice" }), { target: { value: 'Puck' } });
+    await waitFor(() => expect(calls('PUT').length).toBe(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: 'chirp', voice: 'Puck' });
+  });
+
+  const ACCENTS = [{ code: 'en-US', label: 'American English' }, { code: 'en-GB', label: 'British English' },
+    { code: 'en-IN', label: 'Indian English' }, { code: 'en-AU', label: 'Australian English' }];
+
+  it('the English accent is chosen beside Google\'s voice, keeping the voice', async () => {
+    mount(view({ engines: [...ENGINES, CHIRP], engine: 'chirp', voice: 'Kore', source: 'admin', accent: 'en-US', accents: ACCENTS }),
+      (body) => view({ engines: [...ENGINES, CHIRP], ...body, source: 'admin', accents: ACCENTS }));
+    const accent = await screen.findByRole('combobox', { name: 'English accent' });
+    expect([...accent.options].map((o) => o.textContent)).toEqual(ACCENTS.map((a) => a.label));
+    expect(accent.value).toBe('en-US');
+    fireEvent.change(accent, { target: { value: 'en-IN' } });
+    await waitFor(() => expect(calls('PUT').length).toBe(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: 'chirp', voice: 'Kore', accent: 'en-IN' });
+  });
+
+  it('no accent with Kokoro', async () => {
+    mount(view({ accent: 'en-US', accents: ACCENTS }));
+    await engineSelect();
+    expect(screen.queryByRole('combobox', { name: 'English accent' })).toBeNull();
+  });
+
   it('shows nothing if the setting cannot be read', async () => {
     apiFetch.mockResolvedValue(json(500, {}));
     render(<ChatVoicePicker theme={theme} apiHost="" apiPort="" />);

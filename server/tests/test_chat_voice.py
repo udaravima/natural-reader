@@ -31,7 +31,8 @@ MODEL = "gemini-2.5-flash-tts"
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for key in ("CHAT_VOICE", "GOOGLE_TTS_MODEL", "GOOGLE_TTS_VOICE", "GOOGLE_TTS_LANGUAGE", "GOOGLE_TIMEOUT_S"):
+    for key in ("CHAT_VOICE", "GOOGLE_TTS_MODEL", "GOOGLE_TTS_VOICE", "GOOGLE_TTS_LANGUAGE", "GOOGLE_TIMEOUT_S",
+                "GOOGLE_APPLICATION_CREDENTIALS"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -173,6 +174,127 @@ async def test_credentials_that_dont_work_say_so():
                            token=broken)
     assert caught.value.status == 503 and "Ask your admin" in str(caught.value)
     assert "service-account key" in caught.value.detail
+
+
+# ---------- Google Chirp 3 HD (spec 2026-11-18-chirp-voice) ----------
+
+CREDS = {"GOOGLE_APPLICATION_CREDENTIALS": "/run/secrets/google.json"}
+SINHALA, TAMIL, ENGLISH = "ශ්‍රී ලංකාව ලස්සන රටකි.", "இலங்கை ஒரு அழகான நாடு.", "Sri Lanka is a beautiful country."
+
+
+def _chirp(handler, text=ENGLISH, voice="Kore", speed=1.0, env=None):
+    return chat_voice.chirp_speak(text, voice, speed, CREDS if env is None else env,
+                                  transport=httpx.MockTransport(handler), token=_token)
+
+
+def _recording(seen, seconds=None):
+    """A handler that keeps each request's body and answers with `seconds` (a list, taken in turn) of audio."""
+    lengths = iter(seconds or [])
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"audioContent": base64.b64encode(_wav(next(lengths, 0.5))).decode()})
+    return handler
+
+
+def test_chirp_can_be_chosen_once_google_is_set_up():
+    assert chat_voice.needs("chirp", {}) == "GOOGLE_APPLICATION_CREDENTIALS"
+    assert chat_voice.needs("chirp", CREDS) == ""
+    assert chat_voice.needs("chirp", {"GOOGLE_TTS_MODEL": MODEL}) == ""   # Gemini set up says Google is
+    engines = {e["id"]: e for e in chat_voice.engines(CREDS)}
+    assert engines["chirp"] == {"id": "chirp", "label": "Google Chirp 3 HD", "available": True, "needs": ""}
+
+
+def test_the_admins_chirp_choice_applies_while_it_can_run():
+    assert current(_options({"engine": "chirp", "voice": "Charon"}), CREDS) == ChatVoice("chirp", "Charon", "admin")
+    assert current(_options({"engine": "chirp", "voice": "Nobody"}), CREDS) == ChatVoice("chirp", "Kore", "admin")
+    assert current(_options({"engine": "chirp", "voice": "Charon"}), {}).engine == "kokoro"
+    assert current(_options(), {**CREDS, "CHAT_VOICE": "chirp", "GOOGLE_TTS_VOICE": "Puck"}) == ChatVoice(
+        "chirp", "Puck", "env")
+
+
+@pytest.mark.parametrize("text, language", [(ENGLISH, "en-US"), (TAMIL, "ta-IN")])
+async def test_a_sentence_goes_to_chirp_with_its_language_and_voice_name(text, language):
+    seen, requests = [], []
+
+    def handler(request):
+        requests.append(request)
+        return _recording(seen)(request)
+    wav, seconds = await _chirp(handler, text=text)
+    assert str(requests[0].url) == "https://texttospeech.googleapis.com/v1/text:synthesize"
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
+    assert seen == [{"input": {"text": text}, "voice": {"languageCode": language, "name": f"{language}-Chirp3-HD-Kore"},
+                     "audioConfig": {"audioEncoding": "LINEAR16"}}]
+    assert sf.read(io.BytesIO(wav))[1] == 24000 and abs(seconds - 0.5) < 0.01
+
+
+async def test_chirp_takes_the_speed_and_the_configured_english():
+    seen = []
+    await _chirp(_recording(seen), speed=1.25, env={**CREDS, "GOOGLE_TTS_LANGUAGE": "en-IN"})
+    assert seen[0]["voice"]["name"] == "en-IN-Chirp3-HD-Kore"
+    assert seen[0]["audioConfig"] == {"audioEncoding": "LINEAR16", "speakingRate": 1.25}
+
+
+async def test_a_sinhala_sentence_goes_to_gemini_tts_when_it_is_set_up():
+    seen = []
+    await _chirp(_recording(seen), text=SINHALA, voice="Puck", env={**CREDS, "GOOGLE_TTS_MODEL": MODEL})
+    assert seen[0]["voice"] == {"languageCode": "si-LK", "name": "Puck", "modelName": MODEL}
+
+
+async def test_sinhala_without_gemini_tts_is_refused_before_sending(caplog):
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(GoogleVoiceError) as caught:
+        await _chirp(lambda r: pytest.fail("nothing is sent"), text=SINHALA)
+    assert caught.value.status == 503
+    assert "Sinhala" in str(caught.value) and "Ask your admin" in str(caught.value)
+    assert "GOOGLE_TTS_MODEL" in caught.value.detail and "GOOGLE_TTS_MODEL" in caplog.text
+
+
+def test_language_runs_split_mixed_text_into_one_language_each():
+    text = f"{ENGLISH} It is warm. {SINHALA} {TAMIL}"
+    assert chat_voice.language_runs(text, {}) == [
+        ("en-US", f"{ENGLISH} It is warm."), ("si-LK", SINHALA), ("ta-IN", TAMIL)]
+
+
+def test_language_runs_keep_a_sentence_without_letters_with_its_neighbour():
+    assert chat_voice.language_runs(f"42. {TAMIL} 7!", {}) == [("ta-IN", f"42. {TAMIL} 7!")]
+    assert chat_voice.language_runs("…", {}) == [("en-US", "…")]
+    assert chat_voice.language_runs(ENGLISH, {}) == [("en-US", ENGLISH)]
+
+
+async def test_mixed_languages_are_spoken_in_turn_and_joined():
+    seen = []
+    wav, seconds = await _chirp(_recording(seen, [0.5, 1.0, 0.25]), text=f"{ENGLISH} {SINHALA} {TAMIL}",
+                                env={**CREDS, "GOOGLE_TTS_MODEL": MODEL})
+    assert [(b["input"]["text"], b["voice"]["name"]) for b in seen] == [
+        (ENGLISH, "en-US-Chirp3-HD-Kore"), (SINHALA, "Kore"), (TAMIL, "ta-IN-Chirp3-HD-Kore")]
+    audio, rate = sf.read(io.BytesIO(wav))
+    assert rate == 24000 and abs(len(audio) / rate - 1.75) < 0.01 and abs(seconds - 1.75) < 0.01
+
+
+async def test_pieces_at_another_rate_are_joined_at_the_first_ones():
+    lengths = iter([(0.5, 24000), (0.5, 16000)])
+
+    def handler(request):
+        seconds, rate = next(lengths)
+        return httpx.Response(200, json={"audioContent": base64.b64encode(_wav(seconds, rate)).decode()})
+    wav, seconds = await _chirp(handler, text=f"{ENGLISH} {TAMIL}")
+    audio, rate = sf.read(io.BytesIO(wav))
+    assert rate == 24000 and abs(seconds - 1.0) < 0.01 and abs(len(audio) / rate - 1.0) < 0.01
+
+
+async def test_chirps_refusals_name_text_to_speech_not_vertex(caplog):
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(GoogleVoiceError) as caught:
+        await _chirp(lambda r: httpx.Response(403, json={"error": {"message": "nope"}}))
+    assert caught.value.status == 503 and "Ask your admin" in str(caught.value)
+    assert "Chirp" in caught.value.detail and "Vertex" not in caught.value.detail
+    assert "Chirp 3 HD answered 403" in caplog.text
+    for code, status in ((400, 422), (401, 503), (429, 503), (500, 502)):
+        with pytest.raises(GoogleVoiceError) as caught:
+            await _chirp(lambda r, c=code: httpx.Response(c, json={"error": {"message": "nope"}}))
+        assert caught.value.status == status and TOKEN not in str(caught.value)
+    assert TOKEN not in caplog.text
 
 
 async def test_the_token_never_reaches_a_log_or_an_error(caplog):
@@ -318,7 +440,8 @@ async def test_anyone_who_chats_can_ask_who_speaks(voice_client, db_conn, monkey
     await _choose(db_conn, {"engine": "google", "voice": "Puck"})
     assert (await voice_client.get("/v1/chat/voice")).json() == {"engine": "google", "voice": "Puck",
                                                                  "where": "Google Cloud",
-                                                                 "voices": list(chat_voice.GOOGLE_VOICES)}
+                                                                 "voices": list(chat_voice.GOOGLE_VOICES),
+                                                                 "accent": "en-US", "accents": ACCENTS}
 
 
 # ---------- the admin's switch ----------
@@ -398,3 +521,186 @@ async def test_googles_reply_says_who_spoke_where_and_for_how_long(voice_client,
     monkeypatch.setattr(route, "_clock", lambda: next(ticks))
     body = (await voice_client.post("/v1/chat/voice", json={"text": "Hello."})).json()
     assert (body["engine"], body["where"], body["engine_seconds"]) == ("google", "Google Cloud", 2.0)
+
+
+# ---- Chirp 3 HD through the routes (spec 2026-11-18-chirp-voice) ----
+
+async def test_with_chirp_the_route_reads_with_the_persons_voice_and_says_so(voice_client, db_conn, monkeypatch):
+    from server.routers import chat_voice as route
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    await _choose(db_conn, {"engine": "chirp", "voice": "Charon"})
+    calls = []
+
+    async def speak(text, voice, speed, env, **_):
+        calls.append((text, voice, speed))
+        return _wav(), 0.5
+    monkeypatch.setattr(chat_voice, "chirp_speak", speak)
+    monkeypatch.setattr(chat_voice, "google_speak", lambda *a, **k: pytest.fail("Gemini-TTS must not speak"))
+    monkeypatch.setattr(endpoints, "_speak", lambda *a: pytest.fail("Kokoro must not speak"))
+    ticks = iter([10.0, 10.75, 20.0, 20.5])
+    monkeypatch.setattr(route, "_clock", lambda: next(ticks))
+    body = (await voice_client.post("/v1/chat/voice", json={"text": "Hello.", "speed": 1.1,
+                                                            "google_voice": "Puck"})).json()
+    assert calls == [("Hello.", "Puck", 1.1)]
+    assert (body["engine"], body["where"], body["engine_seconds"]) == ("chirp", "Google Cloud", 0.75)
+    assert base64.b64decode(body["audio_base64"]) == _wav() and body["duration_seconds"] == 0.5
+    calls.clear()
+    await voice_client.post("/v1/chat/voice", json={"text": "Hello.", "google_voice": "bf_emma"})
+    assert calls[0][1] == "Charon"   # not one of Google's: the admin's
+
+
+async def test_chirps_refusal_reaches_the_person_in_words(voice_client, db_conn, monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    await _choose(db_conn, {"engine": "chirp", "voice": "Kore"})
+
+    async def speak(*a, **k):
+        raise GoogleVoiceError(503, chat_voice._NO_SINHALA, chat_voice._NO_SINHALA_DETAIL)
+    monkeypatch.setattr(chat_voice, "chirp_speak", speak)
+    r = await voice_client.post("/v1/chat/voice", json={"text": "ශ්‍රී ලංකාව."})
+    assert r.status_code == 503 and "Sinhala" in r.json()["detail"]["message"]
+    assert "GOOGLE_TTS_MODEL" not in r.json()["detail"]["message"]   # the setting is the admin's, in the log
+
+
+async def test_anyone_who_chats_sees_chirp_and_its_voices(voice_client, db_conn, monkeypatch, who):
+    who["p"] = _principal({"chat"})
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    await _choose(db_conn, {"engine": "chirp", "voice": "Puck"})
+    assert (await voice_client.get("/v1/chat/voice")).json() == {"engine": "chirp", "voice": "Puck",
+                                                                 "where": "Google Cloud",
+                                                                 "voices": list(chat_voice.GOOGLE_VOICES),
+                                                                 "accent": "en-US", "accents": ACCENTS}
+
+
+async def test_chirp_cant_be_chosen_until_google_is_set_up(admin_client, db_conn):
+    view = (await admin_client.get("/v1/admin/chat-voice")).json()
+    chirp = {e["id"]: e for e in view["engines"]}["chirp"]
+    assert chirp == {"id": "chirp", "label": "Google Chirp 3 HD", "available": False,
+                     "needs": "GOOGLE_APPLICATION_CREDENTIALS"}
+    r = await admin_client.put("/v1/admin/chat-voice", json={"engine": "chirp"})
+    assert r.status_code == 422 and "GOOGLE_APPLICATION_CREDENTIALS" in r.json()["detail"]["message"]
+    assert (await load_chat_options(db_conn)).chat_voice is None
+
+
+async def test_choosing_chirp_and_a_voice(admin_client, db_conn, monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    view = (await admin_client.put("/v1/admin/chat-voice", json={"engine": "chirp", "voice": "Puck"})).json()
+    assert (view["engine"], view["voice"], view["source"]) == ("chirp", "Puck", "admin")
+    assert (await load_chat_options(db_conn)).chat_voice == {"engine": "chirp", "voice": "Puck"}
+    assert (await admin_client.put("/v1/admin/chat-voice", json={"engine": "chirp", "voice": "Nobody"})).status_code == 422
+    view = (await admin_client.put("/v1/admin/chat-voice", json={"engine": "chirp"})).json()
+    assert view["voice"] == "Kore"
+
+
+async def test_the_runs_of_a_mixed_piece_are_asked_for_at_once_and_kept_in_order():
+    """The Hear it sample: Gemini-TTS's Sinhala takes seconds; English and Tamil needn't wait for it."""
+    import asyncio
+    arrived, seen = asyncio.Event(), []
+
+    async def handler(request):
+        seen.append(json.loads(request.content)["voice"]["languageCode"])
+        if len(seen) == 3:
+            arrived.set()
+        await asyncio.wait_for(arrived.wait(), 1.0)   # one after another, the first would wait here alone
+        seconds = {"en-US": 0.5, "si-LK": 1.0, "ta-IN": 0.25}[json.loads(request.content)["voice"]["languageCode"]]
+        return httpx.Response(200, json={"audioContent": base64.b64encode(_wav(seconds)).decode()})
+    wav, seconds = await _chirp(handler, text=f"{ENGLISH} {SINHALA} {TAMIL}", env={**CREDS, "GOOGLE_TTS_MODEL": MODEL})
+    assert sorted(seen) == ["en-US", "si-LK", "ta-IN"] and abs(seconds - 1.75) < 0.01
+
+
+async def test_a_run_that_fails_cancels_the_others_and_says_why():
+    import asyncio
+    cancelled = asyncio.Event()
+
+    async def handler(request):
+        if json.loads(request.content)["voice"]["languageCode"] == "en-US":
+            return httpx.Response(429, json={"error": {"message": "quota"}})
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+    with pytest.raises(GoogleVoiceError) as caught:
+        await asyncio.wait_for(_chirp(handler, text=f"{ENGLISH} {TAMIL}"), 2.0)
+    assert caught.value.status == 503 and "quota" in str(caught.value)
+    await asyncio.wait_for(cancelled.wait(), 1.0)
+
+
+
+# ---------- the English accent (Gemini-TTS and Chirp 3 HD both take en-US, en-GB, en-IN, en-AU: live 2026-11-18) ----------
+
+ACCENTS = [{"code": "en-US", "label": "American English"}, {"code": "en-GB", "label": "British English"},
+           {"code": "en-IN", "label": "Indian English"}, {"code": "en-AU", "label": "Australian English"}]
+
+
+def test_the_english_accents_are_the_four_both_voices_take():
+    assert chat_voice.accents() == ACCENTS
+
+
+def test_the_accent_is_the_admins_then_the_setting_then_american():
+    chosen = _options({"engine": "chirp", "voice": "Kore", "accent": "en-IN"})
+    assert chat_voice.current_accent(chosen, {"GOOGLE_TTS_LANGUAGE": "en-GB"}) == "en-IN"
+    assert chat_voice.current_accent(_options({"engine": "chirp", "voice": "Kore"}), {"GOOGLE_TTS_LANGUAGE": "en-GB"}) == "en-GB"
+    assert chat_voice.current_accent(_options(), {}) == "en-US"
+    assert chat_voice.current_accent(_options({"engine": "google", "accent": "fr-FR"}), {}) == "en-US"
+
+
+def test_an_accent_is_for_english_and_leaves_sinhala_and_tamil_alone():
+    assert language_of(ENGLISH, {"GOOGLE_TTS_LANGUAGE": "en-GB"}, "en-IN") == "en-IN"
+    assert language_of(TAMIL, {}, "en-IN") == "ta-IN" and language_of(SINHALA, {}, "en-IN") == "si-LK"
+    assert language_of(ENGLISH, {"GOOGLE_TTS_LANGUAGE": "en-GB"}) == "en-GB"
+
+
+async def test_gemini_tts_reads_english_in_the_accent():
+    seen = []
+    await google_speak(ENGLISH, "Kore", 1.0, {"GOOGLE_TTS_MODEL": MODEL}, accent="en-AU",
+                       transport=httpx.MockTransport(_recording(seen)), token=_token)
+    assert seen[0]["voice"] == {"languageCode": "en-AU", "name": "Kore", "modelName": MODEL}
+
+
+async def test_chirp_reads_english_in_the_accents_voice_and_tamil_in_tamils():
+    seen = []
+    await chat_voice.chirp_speak(f"{ENGLISH} {TAMIL}", "Kore", 1.0, CREDS, accent="en-IN",
+                                 transport=httpx.MockTransport(_recording(seen)), token=_token)
+    assert sorted(b["voice"]["name"] for b in seen) == ["en-IN-Chirp3-HD-Kore", "ta-IN-Chirp3-HD-Kore"]
+
+
+async def _accent_calls(db_conn, monkeypatch, value):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    await _choose(db_conn, value)
+    calls = []
+
+    async def speak(text, voice, speed, env, **kw):
+        calls.append(kw.get("accent"))
+        return _wav(), 0.5
+    monkeypatch.setattr(chat_voice, "chirp_speak", speak)
+    return calls
+
+
+async def test_the_route_reads_in_the_persons_accent_else_the_admins(voice_client, db_conn, monkeypatch):
+    calls = await _accent_calls(db_conn, monkeypatch, {"engine": "chirp", "voice": "Kore", "accent": "en-IN"})
+    for accent in ("en-GB", None, "fr-FR", ""):
+        r = await voice_client.post("/v1/chat/voice", json={"text": "Hello.", **({"google_accent": accent}
+                                                                                  if accent is not None else {})})
+        assert r.status_code == 200
+    assert calls == ["en-GB", "en-IN", "en-IN", "en-IN"]
+    view = (await voice_client.get("/v1/chat/voice")).json()
+    assert (view["accent"], view["accents"]) == ("en-IN", ACCENTS)
+
+
+async def test_the_admin_chooses_the_accent_and_it_stays_through_other_changes(admin_client, db_conn, monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/google.json")
+    monkeypatch.setenv("GOOGLE_TTS_MODEL", MODEL)
+    view = (await admin_client.get("/v1/admin/chat-voice")).json()
+    assert (view["accent"], view["accents"]) == ("en-US", ACCENTS)
+    view = (await admin_client.put("/v1/admin/chat-voice",
+                                   json={"engine": "chirp", "voice": "Puck", "accent": "en-IN"})).json()
+    assert view["accent"] == "en-IN"
+    assert (await load_chat_options(db_conn)).chat_voice == {"engine": "chirp", "voice": "Puck", "accent": "en-IN"}
+    view = (await admin_client.put("/v1/admin/chat-voice", json={"engine": "chirp", "voice": "Kore"})).json()
+    assert (view["voice"], view["accent"]) == ("Kore", "en-IN")   # a voice change leaves the accent
+    view = (await admin_client.put("/v1/admin/chat-voice", json={"engine": "google"})).json()
+    assert (view["engine"], view["accent"]) == ("google", "en-IN")
+    r = await admin_client.put("/v1/admin/chat-voice", json={"engine": "google", "accent": "fr-FR"})
+    assert r.status_code == 422 and "accent" in r.json()["detail"]["message"]
+    view = (await admin_client.put("/v1/admin/chat-voice", json={"engine": "google", "accent": None})).json()
+    assert view["accent"] == "en-US"   # back to GOOGLE_TTS_LANGUAGE, else American

@@ -10,7 +10,7 @@ It comes from the admin console, else CHAT_VOICE_INPUT (on|off), else off.
 `speech_model` is the id of the speech model an admin chose, and `added_speech_models` the models an admin added
 (speech/catalogue.py says which model applies, and who wins). `speech_engine` is the engine an admin chose for
 hearing speech (`local`, `openai` or `google`; speech/service.py says which applies), and `chat_voice` who speaks
-the chat's replies and Talk (`{"engine": "kokoro" | "google", "voice": ...}`; chat_voice.py).
+the chat's replies and Talk (`{"engine": "kokoro" | "google" | "chirp", "voice": ...}`; chat_voice.py).
 
 These settings share one row, `{"web_search": ..., "voice_input": ..., ...}`, and are independent: each key is read
 and written on its own, a missing key falls through to the environment without a warning, and a save or reset

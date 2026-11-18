@@ -139,6 +139,7 @@ export default function App() {
   const [speechLanguage, setSpeechLanguage] = usePersistedState('speechLanguage', deploymentDefaults.speechLanguage);
   // Google's voice for this person's replies, when an admin has Google read them; '' for the admin's (Settings → Chat).
   const [googleVoice, setGoogleVoice] = usePersistedState('googleVoice', '');
+  const [googleAccent, setGoogleAccent] = usePersistedState('googleAccent', '');   // '' : the admin's
   // Settings, Talk: what this person changed about how Talk listens, on this device; the server's are the defaults.
   const [talkChoices, setTalkChoices] = usePersistedState('talkSettings', NO_TALK_CHOICES);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
@@ -380,7 +381,7 @@ export default function App() {
   const ttsEngine = useTtsEngine({
     textItems, textItemsPage, currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef, currentPage, setCurrentPage, numPages,
-    selectedVoice, playbackSpeed, googleVoice, isLocalhost, volume,
+    selectedVoice, playbackSpeed, googleVoice, googleAccent, isLocalhost, volume,
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
@@ -1315,7 +1316,7 @@ export default function App() {
             onUserChanged={auth.patchUser} showToast={showToast} />
         ) : null}
         voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, googleVoice, setGoogleVoice, playbackSpeed, apiHost, apiPort, canChat, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, googleVoice, setGoogleVoice, googleAccent, setGoogleAccent, playbackSpeed, apiHost, apiPort, canChat, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
         talkSettings={canTalk ? { defaults: speechStatus?.window ?? null, choices: talkChoices, setChoices: setTalkChoices } : null}
         connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
         appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}

@@ -898,14 +898,18 @@ def _warm_speech(options: chat_options.ChatOptions) -> None:
 
 class ChatVoiceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    engine: Literal["kokoro", "google"] | None   # null: CHAT_VOICE (or Kokoro) applies again
+    engine: Literal["kokoro", "google", "chirp"] | None   # null: CHAT_VOICE (or Kokoro) applies again
     voice: str | None = Field(default=None, max_length=40)   # Google's voice; empty: GOOGLE_TTS_VOICE, else Kore
+    # Google's English accent (chat_voice.ACCENT_CODES). Left out: the one chosen before stays; null: removed, so
+    # GOOGLE_TTS_LANGUAGE (else American) applies.
+    accent: str | None = Field(default=None, max_length=10)
 
 
 def _chat_voice_view(options: chat_options.ChatOptions) -> dict:
     voice = chat_voice.current(options)
     return {"engine": voice.engine, "voice": voice.voice, "source": voice.source, "engines": chat_voice.engines(),
-            "voices": list(chat_voice.GOOGLE_VOICES), "model": (os.environ.get("GOOGLE_TTS_MODEL") or "").strip() or None}
+            "voices": list(chat_voice.GOOGLE_VOICES), "model": (os.environ.get("GOOGLE_TTS_MODEL") or "").strip() or None,
+            "accent": chat_voice.current_accent(options), "accents": chat_voice.accents()}
 
 
 @router.get("/chat-voice")
@@ -922,20 +926,29 @@ async def put_chat_voice(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Choose who speaks the chat's replies and Talk: Kokoro, with each person's own voice, or Google Gemini-TTS,
-    with one voice for everyone. Documents and audiobooks keep Kokoro whatever this says. Applies from the next
-    sentence read."""
+    """Choose who speaks the chat's replies and Talk: Kokoro, with each person's own voice, or Google (Gemini-TTS or
+    Chirp 3 HD), with the admin's voice unless a person picks their own. Documents and audiobooks keep Kokoro
+    whatever this says. Applies from the next sentence read."""
+    if "accent" in body.model_fields_set:
+        if body.accent is not None and body.accent not in chat_voice.ACCENT_CODES:
+            raise refusal(422, "unknown_accent", "That isn't one of the English accents Google's voices offer.")
+        accent = body.accent
+    else:
+        accent = ((await chat_options.load_chat_options(conn)).chat_voice or {}).get("accent")
     value = None
-    if body.engine == "google":
-        needs = chat_voice.needs("google")
+    if body.engine in chat_voice.GOOGLE_ENGINES:
+        needs = chat_voice.needs(body.engine)
         if needs:
-            raise refusal(422, "engine_not_configured", f"Google's voice isn't set up on this server: it needs {needs}.")
+            raise refusal(422, "engine_not_configured",
+                          f"{chat_voice.LABELS[body.engine]} isn't set up on this server: it needs {needs}.")
         voice = body.voice or chat_voice.default_voice()
         if voice not in chat_voice.GOOGLE_VOICES:
             raise refusal(422, "unknown_voice", "That isn't one of Google's voices.")
-        value = {"engine": "google", "voice": voice}
+        value = {"engine": body.engine, "voice": voice}
     elif body.engine == "kokoro":
         value = {"engine": "kokoro"}
+    if value is not None and accent in chat_voice.ACCENT_CODES:
+        value["accent"] = accent   # kept with Kokoro too, for when Google is chosen again
     saved = await chat_options.save_chat_voice(conn, value, updated_by=str(principal.user_id))
     return _chat_voice_view(saved)
 

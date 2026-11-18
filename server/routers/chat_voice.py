@@ -1,5 +1,6 @@
 """The chat's voice (spec 2026-11-03-google-speech): POST /v1/chat/voice reads one piece of a reply aloud with
-whichever engine the deployment chose for the chat and Talk, and GET says which. The answer has the same shape as
+whichever engine the deployment chose for the chat and Talk (Kokoro, Gemini-TTS or Chirp 3 HD), and GET says
+which. The answer has the same shape as
 /v1/synthesize, so the browser plays either the same way."""
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ _clock = time.monotonic   # a seam for the tests
 
 
 def _where(engine: str) -> str:
-    return "Google Cloud" if engine == "google" else "this server"
+    return "Google Cloud" if engine in chat_voice.GOOGLE_ENGINES else "this server"
 
 
 def _timing(engine: str, started: float) -> dict:
@@ -54,8 +55,10 @@ async def who_speaks(access=Depends(voice_access)):
     voice = chat_voice.current(access[1])
     out = {"engine": voice.engine, "voice": voice.voice,
            "where": _where(voice.engine)}
-    if voice.engine == "google":
+    if voice.engine in chat_voice.GOOGLE_ENGINES:
         out["voices"] = list(chat_voice.GOOGLE_VOICES)   # each person picks one in Settings → Chat
+        out["accent"] = chat_voice.current_accent(access[1])   # and an English accent
+        out["accents"] = chat_voice.accents()
     return out
 
 
@@ -74,8 +77,11 @@ async def speak(body: ChatVoiceRequest, http_request: Request, access=Depends(vo
     try:
         # The person's own Google voice when it is one of Google's; the admin's otherwise.
         chosen = body.google_voice if body.google_voice in chat_voice.GOOGLE_VOICES else voice.voice
-        wav, seconds = await chat_voice.google_speak(body.text, chosen, body.speed, os.environ)
+        accent = (body.google_accent if body.google_accent in chat_voice.ACCENT_CODES
+                  else chat_voice.current_accent(options))
+        speak = chat_voice.chirp_speak if voice.engine == "chirp" else chat_voice.google_speak
+        wav, seconds = await speak(body.text, chosen, body.speed, os.environ, accent=accent)
     except chat_voice.GoogleVoiceError as e:
         raise refusal(e.status, "voice_failed", str(e)) from None
     return {"audio_base64": base64.b64encode(wav).decode("ascii"), "duration_seconds": seconds,
-            **_timing("google", started)}
+            **_timing(voice.engine, started)}

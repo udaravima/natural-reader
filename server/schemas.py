@@ -34,6 +34,8 @@ class ChatVoiceRequest(TTSRequest):
     """A piece of a reply to read aloud (POST /v1/chat/voice). `google_voice`: the person's own Google voice, used
     when Google reads the replies and it is one of Google's (spec 2026-11-04-speech-choices); else the admin's."""
     google_voice: str | None = Field(default=None, max_length=40)
+    # The person's own English accent for Google's voices (one of chat_voice.ACCENT_CODES); else the admin's.
+    google_accent: str | None = Field(default=None, max_length=10)
 
 
 class BatchTTSRequest(BaseModel):

@@ -27,6 +27,7 @@ export function useTtsEngine({
     selectedVoice,
     playbackSpeed,
     googleVoice = '',   // the person's Google voice for replies, '' for the admin's
+    googleAccent = '',  // the person's English accent for Google's voices (en-US, en-GB, en-IN, en-AU), '' for the admin's
     isLocalhost,
     volume,
     apiHost,
@@ -101,6 +102,7 @@ export function useTtsEngine({
                     speed: speed || playbackSpeed,
                     // The person's own Google voice, used when Google reads the replies (spec 2026-11-04-speech-choices).
                     ...(path === CHAT_VOICE_PATH && googleVoice ? { google_voice: googleVoice } : {}),
+                    ...(path === CHAT_VOICE_PATH && googleAccent ? { google_accent: googleAccent } : {}),
                 }),
                 signal,
             });
@@ -125,7 +127,7 @@ export function useTtsEngine({
             if (err.name !== 'AbortError') console.error('Synthesis error:', err);
             return null;
         }
-    }, [apiHost, apiPort, selectedVoice, playbackSpeed, googleVoice, showToast]);
+    }, [apiHost, apiPort, selectedVoice, playbackSpeed, googleVoice, googleAccent, showToast]);
     const synthesizeText = useCallback((text, options) => synthesizeAt('/v1/synthesize', text, options),
         [synthesizeAt]);
     const synthesizeChat = useCallback((text, options) => synthesizeAt(CHAT_VOICE_PATH, text, options),
