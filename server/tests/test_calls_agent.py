@@ -144,3 +144,21 @@ async def test_a_keypad_step_logs_the_digits_the_caller_keyed():
 async def test_without_the_keypad_the_prompt_does_not_mention_it():
     agent, _, _, _ = agent_with([TextDelta("Hello."), Finish("stop")])
     assert "collect_digits" not in agent.messages[0].content
+
+
+async def test_with_the_facts_in_the_prompt_the_agent_is_told_them_and_answers_without_a_tool():
+    clock = Clock()
+    router = FakeRouter(clock, [0.4, TextDelta("Yes, breakfast is included."), Finish("stop")])
+    tools = HOTEL.toolset(without=(HOTEL.facts.tool,))
+    agent = CallAgent(router, "fake:model", HOTEL, tools, clock=clock, facts=HOTEL.facts)
+    r = await agent.turn("Is breakfast included in the rate?")
+    prompt = agent.messages[0].content
+    for answer in HOTEL.facts.answers.values():
+        assert answer in prompt
+    assert "get_hotel_info" not in router.requests[0]["tools"]
+    assert r.steps == 1 and r.text == "Yes, breakfast is included."
+
+
+async def test_without_the_facts_in_the_prompt_the_agent_is_not_told_them():
+    agent, _, _, _ = agent_with([TextDelta("Hello."), Finish("stop")])
+    assert HOTEL.facts.answers["breakfast"] not in agent.messages[0].content

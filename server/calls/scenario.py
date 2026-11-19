@@ -1,7 +1,8 @@
 """A scenario pack (spec 2026-11-17-call-simulation): a folder with
 
 - `scenario.toml`: the scenario's id, name and fixed "today", the agent (name, greeting, filler line, backstory,
-  rules; optionally a filler line per tool, "still checking" lines and keypad instructions) and the scripted calls,
+  rules; optionally a filler line per tool, "still checking" lines, keypad instructions and `[agent.facts]`: the
+  tool that serves fixed facts and the data.json table they come from, for --facts-in-prompt) and the scripted calls,
   each with what the caller says, turn by turn, and what the call must achieve. A call can also say what the caller
   says when numbers are keyed instead of spoken (`caller_keypad`) and the digits they key (`[calls.keys]`);
 - `data.json`: the business's data, copied fresh into every call;
@@ -41,6 +42,14 @@ class Agent:
 
 
 @dataclass(frozen=True)
+class Facts:
+    """Fixed facts a pack can give the agent in its instructions instead of through a tool: `tool` is the tool that
+    serves them, `answers` its answers by topic, from the data.json table [agent.facts] names."""
+    tool: str
+    answers: dict[str, str]
+
+
+@dataclass(frozen=True)
 class Expect:
     tools: tuple[str, ...] = ()               # each must run at least once without an error
     never_tools: tuple[str, ...] = ()         # none of these may run
@@ -75,9 +84,11 @@ class Scenario:
     data: dict[str, Any] = field(repr=False)
     tools: tuple[SimTool, ...] = field(repr=False)
     directory: Path = field(repr=False)
+    facts: Facts | None = None
 
-    def toolset(self, extra: tuple[SimTool, ...] = ()) -> ToolSet:
-        return ToolSet([*self.tools, *extra], self.data, self.today)
+    def toolset(self, extra: tuple[SimTool, ...] = (), without: tuple[str, ...] = ()) -> ToolSet:
+        """The call's tools over a fresh copy of the data; `without` leaves those tools out."""
+        return ToolSet([t for t in (*self.tools, *extra) if t.name not in without], self.data, self.today)
 
     def call(self, call_id: str) -> CallScript:
         for c in self.calls:
@@ -148,6 +159,22 @@ def _fillers(agent_raw: dict, default: str, tool_names: set[str], where: str) ->
     if default:
         fillers[""] = (default,)
     return fillers
+
+
+def _facts(table: Any, tool_names: set[str], data: dict[str, Any], where: str) -> Facts | None:
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise ScenarioError(f"{where}: [agent.facts] must be a table with `tool` and `data`")
+    tool, key = table.get("tool"), table.get("data")
+    if tool not in tool_names:
+        raise ScenarioError(f"{where} [agent.facts]: the tool {tool!r} isn't in tools.py "
+                            f"(it has {', '.join(sorted(tool_names))})")
+    answers = data.get(key) if isinstance(key, str) else None
+    if not isinstance(answers, dict) or not answers or \
+            not all(isinstance(v, str) and v.strip() for v in answers.values()):
+        raise ScenarioError(f"{where} [agent.facts]: data {key!r} must name a table of topic = answer in data.json")
+    return Facts(tool, {str(k): v.strip() for k, v in answers.items()})
 
 
 def _keys(table: Any, keypad: dict[str, str], where: str) -> dict[str, str]:
@@ -250,4 +277,4 @@ def load_scenario(name_or_path: str) -> Scenario:
     if not calls:
         raise ScenarioError(f"{where}: no [[calls]]")
     return Scenario(scenario_id, _text(raw, "name", where), today, language, agent, tuple(calls), data, tools,
-                    folder)
+                    folder, _facts(agent_raw.get("facts"), tool_names, data, where))

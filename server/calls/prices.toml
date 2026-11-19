@@ -73,6 +73,12 @@ source = "https://cloud.google.com/text-to-speech/pricing"
 official = true
 note = "Chirp 3 HD voices; the first 1 million characters a month are free (not taken off here). Read from search results quoting Google's page."
 
+[voice.chirp-stream]
+per_m_chars = 30.0
+source = "https://cloud.google.com/text-to-speech/pricing"
+official = true
+note = "The same Chirp 3 HD voices over StreamingSynthesize. Google's page names no separate price for streaming (searched 2026-11-18), so it is taken as billed by the character like voice.chirp."
+
 [voice."google:gemini-2.5-flash-lite-preview-tts"]
 text_per_m = 0.50
 audio_per_m = 10.0

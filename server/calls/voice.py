@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import httpx
+import numpy as np
 import soundfile as sf
 
 from .nettrace import RequestTrace, TracingTransport
@@ -44,10 +45,16 @@ class Heard:
 class Spoken:
     wav: bytes | None
     audio_s: float
-    seconds: float
+    seconds: float                       # until all of the audio was made
     net: dict[str, float] | None = None
     new_connection: bool | None = None
     error: str | None = None
+    first_audio_s: float | None = None   # a streamed voice: the earliest it could start playing without a gap
+
+    @property
+    def playable_s(self) -> float:
+        """When the sentence could start playing: a streamed voice's first_audio_s, else once all of it is made."""
+        return self.first_audio_s if self.first_audio_s is not None else self.seconds
 
 
 def _net(sink: list[RequestTrace], mark: int, ended: float) -> tuple[dict[str, float] | None, bool | None]:
@@ -316,6 +323,59 @@ class ChirpVoice:
         return Spoken(wav, audio_s, ended - started, net, new, error)
 
 
+class ChirpStreamVoice:
+    """Chirp 3 HD voices over Cloud Text-to-Speech's StreamingSynthesize (gRPC, google-cloud-texttospeech, installed
+    for the benchmark, not in the app's requirements): audio comes in pieces of about 0.24 s, the first about 0.3 s
+    after the text is sent and the rest several times quicker than it plays (2026-11-18), so a sentence can start
+    playing when its first piece arrives. `first_audio_s` says when; `seconds` is still until the last piece."""
+    where, parallel = "Google Cloud", 2
+    RATE = 24000
+
+    def __init__(self, name: str, *, client=None, clock=time.perf_counter) -> None:
+        self.name = name
+        self.language = name[:5]
+        self.label = f"google {name} streamed (not in the app yet)"
+        self.client, self.clock = client, clock
+
+    def _client(self):
+        if self.client is None:
+            try:
+                from google.cloud import texttospeech
+            except ImportError:
+                raise SetupError("chirp-stream needs google-cloud-texttospeech in the benchmark's "
+                                 "environment") from None
+            self.client = texttospeech.TextToSpeechAsyncClient()
+        return self.client
+
+    async def speak(self, text: str) -> Spoken:
+        from google.cloud import texttospeech as tts
+        from .playback import stream_start
+        started = self.clock()
+
+        async def requests():
+            yield tts.StreamingSynthesizeRequest(streaming_config=tts.StreamingSynthesizeConfig(
+                voice=tts.VoiceSelectionParams(name=self.name, language_code=self.language),
+                streaming_audio_config=tts.StreamingAudioConfig(audio_encoding=tts.AudioEncoding.PCM,
+                                                                sample_rate_hertz=self.RATE)))
+            yield tts.StreamingSynthesizeRequest(input=tts.StreamingSynthesisInput(text=text))
+
+        pcm, arrivals = bytearray(), []
+        try:
+            async for response in await self._client().streaming_synthesize(requests=requests()):
+                piece = response.audio_content
+                arrivals.append((self.clock() - started, len(piece) / 2 / self.RATE))
+                pcm += piece
+        except SetupError:
+            raise
+        except Exception as e:
+            return Spoken(None, len(text.split()) * WORD_SECONDS, self.clock() - started,
+                          error=f"{type(e).__name__}: {e}"[:300])
+        seconds = self.clock() - started
+        audio = np.frombuffer(bytes(pcm), dtype="<i2").astype(np.float32) / 32768
+        return Spoken(_wav(audio, self.RATE), len(audio) / self.RATE, seconds,
+                      first_audio_s=stream_start(arrivals))
+
+
 def make_voice(spec: str, env: Mapping[str, str] = os.environ):
     kind, _, rest = spec.partition(":")
     if kind == "none":
@@ -331,5 +391,9 @@ def make_voice(spec: str, env: Mapping[str, str] = os.environ):
         if not rest.strip():
             raise SetupError("--voice chirp needs a voice name, such as chirp:en-US-Chirp3-HD-Kore")
         return ChirpVoice(rest.strip())
-    raise SetupError(f"--voice {spec!r}: use none, kokoro[:<voice>], google[:<model>[:<voice>]] or "
-                     "chirp:<voice name>")
+    if kind == "chirp-stream":
+        if not rest.strip():
+            raise SetupError("--voice chirp-stream needs a voice name, such as chirp-stream:en-US-Chirp3-HD-Kore")
+        return ChirpStreamVoice(rest.strip())
+    raise SetupError(f"--voice {spec!r}: use none, kokoro[:<voice>], google[:<model>[:<voice>]], "
+                     "chirp:<voice name> or chirp-stream:<voice name>")

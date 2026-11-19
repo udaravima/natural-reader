@@ -58,3 +58,74 @@ def test_chirp_voices_take_their_language_from_the_voice_name():
     assert "not in the app" in v.label
     with pytest.raises(SetupError, match="chirp"):
         make_voice("chirp:", {})
+
+
+def test_streamed_chirp_voices_are_chosen_by_name():
+    from server.calls.voice import ChirpStreamVoice
+    v = make_voice("chirp-stream:en-IN-Chirp3-HD-Kore", {})
+    assert isinstance(v, ChirpStreamVoice) and v.language == "en-IN" and v.parallel == 2
+    assert "streamed" in v.label
+    with pytest.raises(SetupError, match="chirp-stream"):
+        make_voice("chirp-stream:", {})
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class FakeTTS:
+    """Plays (seconds to wait, PCM bytes) pieces; records what was asked."""
+
+    def __init__(self, clock, pieces, fail=None):
+        self.clock, self.pieces, self.fail, self.asked = clock, pieces, fail, []
+
+    async def streaming_synthesize(self, requests):
+        async for r in requests:
+            self.asked.append(r)
+
+        async def responses():
+            for wait, pcm in self.pieces:
+                self.clock.t += wait
+                if self.fail:
+                    raise self.fail
+                yield type("R", (), {"audio_content": pcm})()
+        return responses()
+
+
+async def test_a_streamed_chirp_voice_says_when_its_audio_could_start_and_returns_it_all():
+    import io
+
+    import soundfile as sf
+
+    from server.calls.voice import ChirpStreamVoice
+    clock = FakeClock()
+    second = b"\0\0" * 24000   # one second of 24 kHz 16-bit silence
+    fake = FakeTTS(clock, [(0.35, second[:9600]), (0.03, second[:11520]), (0.03, second)])
+    v = ChirpStreamVoice("en-US-Chirp3-HD-Kore", client=fake, clock=clock)
+    s = await v.speak("Check-in is from 2 pm.")
+    assert s.first_audio_s == pytest.approx(0.35) and s.playable_s == pytest.approx(0.35)
+    assert s.seconds == pytest.approx(0.41)
+    assert s.audio_s == pytest.approx(0.2 + 0.24 + 1.0)
+    assert sf.info(io.BytesIO(s.wav)).duration == pytest.approx(s.audio_s)
+    config, text = fake.asked
+    assert config.streaming_config.voice.name == "en-US-Chirp3-HD-Kore" and text.input.text == "Check-in is from 2 pm."
+    assert s.error is None
+
+
+async def test_a_streamed_chirp_voice_that_fails_reports_it_without_audio():
+    from server.calls.voice import ChirpStreamVoice
+    clock = FakeClock()
+    v = ChirpStreamVoice("en-US-Chirp3-HD-Kore", client=FakeTTS(clock, [(0.2, b"")], fail=RuntimeError("quota")),
+                         clock=clock)
+    s = await v.speak("Hello there.")
+    assert s.wav is None and "quota" in s.error and s.first_audio_s is None
+    assert s.playable_s == s.seconds
+
+
+def test_a_batch_voice_is_playable_only_once_all_of_it_is_made():
+    from server.calls.voice import Spoken
+    assert Spoken(None, 1.0, 0.7).playable_s == 0.7

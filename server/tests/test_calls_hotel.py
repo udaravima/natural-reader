@@ -173,3 +173,41 @@ def test_a_call_expecting_a_tool_the_pack_lacks_is_refused(tmp_path: Path):
     (tmp_path / "scenario.toml").write_text(text)
     with pytest.raises(ScenarioError, match="book_spa"):
         load_scenario(str(tmp_path))
+
+
+def test_the_hotel_pack_names_its_fixed_facts_and_the_tool_that_serves_them(hotel):
+    assert hotel.facts.tool == "get_hotel_info"
+    assert hotel.facts.answers["breakfast"].startswith("Breakfast is included")
+    assert set(hotel.facts.answers) == set(hotel.data["info"])
+
+
+def test_a_pack_without_a_facts_table_has_no_facts(tmp_path: Path):
+    source = Path(__file__).resolve().parents[1] / "calls" / "scenarios" / "hotel"
+    for name in ("data.json", "tools.py"):
+        (tmp_path / name).write_text((source / name).read_text())
+    text = (source / "scenario.toml").read_text()
+    start = text.index("[agent.facts]")
+    (tmp_path / "scenario.toml").write_text(text[:start] + text[text.index("\n\n", start):])
+    assert load_scenario(str(tmp_path)).facts is None
+
+
+@pytest.mark.parametrize("table, words", [
+    ('tool = "get_spa_info"\ndata = "info"', "get_spa_info"),
+    ('tool = "get_hotel_info"\ndata = "spa"', "spa"),
+    ('tool = "get_hotel_info"\ndata = "rooms"', "rooms"),
+])
+def test_a_facts_table_naming_a_missing_tool_or_data_that_is_not_text_is_refused(tmp_path: Path, table, words):
+    source = Path(__file__).resolve().parents[1] / "calls" / "scenarios" / "hotel"
+    for name in ("data.json", "tools.py"):
+        (tmp_path / name).write_text((source / name).read_text())
+    text = (source / "scenario.toml").read_text()
+    start = text.index("[agent.facts]")
+    end = text.index("\n\n", start)
+    (tmp_path / "scenario.toml").write_text(text[:start] + "[agent.facts]\n" + table + text[end:])
+    with pytest.raises(ScenarioError, match=words):
+        load_scenario(str(tmp_path))
+
+
+def test_a_toolset_can_leave_a_tool_out(hotel):
+    names = {spec.name for spec in hotel.toolset(without=("get_hotel_info",)).specs()}
+    assert "get_hotel_info" not in names and "check_availability" in names

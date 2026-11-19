@@ -72,6 +72,7 @@ and composes every pair, because Talk runs the stages one after another:
 | `openai:<model>[@<url>]` | the app's OpenAI-compatible engine. OpenAI's own API has `whisper-1` (Whisper large-v2), `gpt-4o-mini-transcribe` and `gpt-4o-transcribe`, but no `whisper-small`; a `whisper-small` you host behind the same API goes after the `@`. Key: `SPEECH_API_KEY`, else `INFERENCE_OPENAI_API_KEY` for OpenAI's API |
 | `kokoro[:<voice>]`, `google[:<model>[:<voice>]]` | the app's two voices (Gemini-TTS models: `gemini-2.5-flash-tts`, `gemini-2.5-flash-lite-preview-tts`) |
 | `chirp:<voice name>` | Google's Chirp 3 HD voices, such as `en-US-Chirp3-HD-Kore` or `en-IN-Chirp3-HD-Kore`: **not in the app yet**, benchmarked to see whether they should be |
+| `chirp-stream:<voice name>` | the same voices over Cloud Text-to-Speech's StreamingSynthesize: the audio comes in pieces, so a sentence can start playing at its first piece (about 0.3 s, against 0.75 s for `chirp:` to make the whole sentence, on 20 sentences on 2026-11-18). Its time is when the audio could start and play through without a gap. Needs `google-cloud-texttospeech` in the benchmark's environment, not the app's: `uv pip install --python .venv/bin/python google-cloud-texttospeech` |
 
 Output, in `bench-out/matrix-<scenario>-<time>/`:
 
@@ -110,6 +111,13 @@ for a local model: Ollama loads it and reads them once, as on a line already ans
 of a call on `ollama:gemma4:e4b` took 23.7 s to its first piece on a CPU (2026-11-18). The warm-up uses the calls'
 own settings (no context size or keep-alive, as Talk sends by default): a different context size would make Ollama
 load the model again. Keep-alive is Ollama's (5 minutes unless the server sets one).
+
+`--facts-in-prompt` tells the agent the scenario's fixed facts in its instructions and leaves out the tool that
+serves them (`[agent.facts]`: the tool, and the `data.json` table of topic = answer). A question about them then
+takes one model request instead of two: on the hotel's questions call, the first piece came 1.6 s sooner on
+`ollama:gemma4:e4b` (1.0 s against 2.65 s, median) and 2.9 s sooner on an overloaded Gemini (2026-11-18). The
+facts' tool is then not expected to run, and their amounts count as told, not invented. Both `bench_call.py` and
+`bench_matrix.py` take it.
 
 `--keypad` plays the calls' `caller_keypad` lines: the caller keys the phone number or booking reference
 (`[calls.keys]`) when the agent calls `collect_digits`, whose recorded instruction comes from `[agent.keypad]`.
@@ -185,7 +193,8 @@ network's share depends on where the code runs.
 A scenario is a folder (in `server/calls/scenarios/`, or anywhere, passed as `--scenario PATH`):
 
 - `scenario.toml`: `id`, `name`, a fixed `today`, the `[agent]` (name, greeting, filler, backstory, rules,
-  `still_checking`, `[agent.fillers]` per tool, `[agent.keypad]` instructions) and `[[calls]]`, each with the
+  `still_checking`, `[agent.fillers]` per tool, `[agent.keypad]` instructions, `[agent.facts]` for
+  `--facts-in-prompt`) and `[[calls]]`, each with the
   caller's lines, `[calls.expect]`, and for `--keypad` the `caller_keypad` lines and `[calls.keys]`;
 - `data.json`: the business's data, copied fresh into every call;
 - `tools.py`: plain functions marked `@tool(description, json_schema)`, taking `(state, args)` and returning a

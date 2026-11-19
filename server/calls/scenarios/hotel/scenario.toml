@@ -38,6 +38,12 @@ cancel_booking = ["I'll cancel that for you now."]
 get_hotel_info = ["Let me check that for you.", "Let me look that up."]
 transfer_to_human = ["I'll put you through now."]
 
+# Fixed facts the benchmark can put in the agent's instructions instead of behind a tool (--facts-in-prompt): the
+# tool that serves them and the data.json table, topic = answer, they come from.
+[agent.facts]
+tool = "get_hotel_info"
+data = "info"
+
 # What the agent says when it asks the caller to key a number on the phone's keypad (--keypad).
 [agent.keypad]
 phone = "Please key in your phone number on your keypad, then press the hash key."

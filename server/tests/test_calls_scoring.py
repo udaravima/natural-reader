@@ -1,7 +1,7 @@
 """Sentence cuts, playback waits and call scoring for the call benchmark (spec 2026-11-17-call-simulation)."""
 import pytest
 
-from server.calls.playback import playback
+from server.calls.playback import playback, stream_start
 from server.calls.scenario import CallScript, Expect, load_scenario
 from server.calls.scoring import money, normalize, score_call, wer
 from server.calls.sentences import SentenceSplitter
@@ -95,6 +95,17 @@ def test_a_voice_slower_than_speech_leaves_silences_between_sentences():
     assert p2["stalls_s"] == pytest.approx(0.5)
 
 
+def test_a_streamed_voice_can_start_playing_when_its_first_piece_arrives_if_the_rest_keeps_ahead():
+    # (arrival, seconds of audio): 0.24 s pieces every 0.03 s, far quicker than they play
+    assert stream_start([(0.4, 0.2), (0.43, 0.24), (0.46, 0.24)]) == pytest.approx(0.4)
+
+
+def test_a_streamed_voice_that_falls_behind_starts_late_enough_to_play_without_a_gap():
+    # the third piece comes at 1.5 s; 0.5 s of audio plays before it, so starting at 1.0 s leaves no gap
+    assert stream_start([(0.4, 0.2), (0.5, 0.3), (1.5, 0.3)]) == pytest.approx(1.0)
+    assert stream_start([]) is None
+
+
 def test_playback_of_nothing():
     assert playback([], [], [], parallel=1) == {"first_audio_s": None, "stalls_s": 0.0, "longest_stall_s": 0.0,
                                                  "finished_s": None, "audio_s": 0.0, "gaps_s": []}
@@ -158,6 +169,15 @@ def test_a_tool_that_answered_with_an_error_does_not_count_as_used():
     script = CallScript("x", "x", ("hi",), "en", Expect(tools=("cancel_booking",)))
     [check] = [c for c in score_call(script, ["ok"], tools.log, tools.state, HOTEL.data).checks if c.name == "tools"]
     assert not check.ok and "only with errors" in check.detail
+
+
+def test_with_the_facts_in_the_prompt_their_tool_is_not_required_and_their_amounts_are_not_invented():
+    script = HOTEL.call("hotel-questions")
+    replies = ["Check-in is from 2 pm.", "Yes, breakfast is included.", "A car costs LKR 9,500 each way."]
+    told = score_call(script, replies, [], {"bookings": []}, HOTEL.data, facts=HOTEL.facts)
+    assert told.passed, [c for c in told.checks if not c.ok]
+    untold = {c.name for c in score_call(script, replies, [], {"bookings": []}, HOTEL.data).checks if not c.ok}
+    assert untold == {"tools", "money"}
 
 
 def test_turns_left_without_an_answer_fail_the_call():

@@ -52,7 +52,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
                                                  "openai:<model>[@<url>], google-stream:<recognizer>[@<model>], "
                                                  "openai-rt:<model>")
     p.add_argument("--voice", required=True, help="comma-separated: kokoro[:<voice>], google[:<model>[:<voice>]], "
-                                                  "chirp:<voice name>")
+                                                  "chirp:<voice name>, chirp-stream:<voice name>")
     p.add_argument("--voice-rpm", type=int, default=0, help="Gemini-TTS requests a minute, per model (often 10)")
     p.add_argument("--caller-voice", default="kokoro:bm_george")
     p.add_argument("--caller-audio", type=Path, help="recordings named <call id>-<turn>.wav")
@@ -64,6 +64,9 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--think", default="off")
     p.add_argument("--keypad", action="store_true", help="numbers are keyed on the keypad (the calls' caller_keypad "
                                                           "lines and keys)")
+    p.add_argument("--facts-in-prompt", action="store_true",
+                   help="tell the agent the pack's fixed facts in its instructions and leave out the tool that serves "
+                        "them ([agent.facts]): a question about them then takes one model request, not two")
     p.add_argument("--keying", default="1.0,0.4", help="seconds before the first key, seconds a key (hash included)")
     p.add_argument("--still-after", type=float, default=1.5, help="silence after a filler before 'still checking'")
     p.add_argument("--no-smart-turn", action="store_true", help="skip the end-of-turn model")
@@ -130,6 +133,8 @@ async def run(args: argparse.Namespace) -> int:
     try:
         scenario = load_scenario(args.scenario)
         scripts = [scenario.call(c.strip()) for c in args.calls.split(",")] if args.calls else list(scenario.calls)
+        if args.facts_in_prompt and scenario.facts is None:
+            raise ScenarioError(f"{scenario.id} has no [agent.facts] table: --facts-in-prompt has nothing to tell")
         all_ears = {h: make_ears(h) for h in hear_specs}
         voices = {v: make_voice(v) for v in voice_specs}
         caller = make_voice(args.caller_voice)
@@ -143,6 +148,8 @@ async def run(args: argparse.Namespace) -> int:
         return 2
     clock = PausableClock()
     paced = PacedRouter(router, Throttle(args.model_rpm), clock)
+    facts = scenario.facts if args.facts_in_prompt else None
+    without = (facts.tool,) if facts else ()
     silence = args.silence_ms / 1000
     out = args.out or ROOT / "bench-out" / f"matrix-{scenario.id}-{datetime.now():%Y%m%d-%H%M%S}"
     recordings = out / "recordings"
@@ -235,10 +242,10 @@ async def run(args: argparse.Namespace) -> int:
     # ---- 2. the model, through each hearing's transcripts ----
     if args.warm_model:   # same settings as the calls (no context size or keep-alive unless Talk sends one), or
         # Ollama would load the model again for the first call
-        warm_tools = scenario.toolset((keypad_tool(scripts[0].keys),) if args.keypad else ())
+        warm_tools = scenario.toolset((keypad_tool(scripts[0].keys),) if args.keypad else (), without)
         warm_agent = CallAgent(paced, args.model, scenario, warm_tools, settings=CallSettings(think=args.think),
                                max_steps=args.max_steps, first_clause_chars=args.first_clause, clock=clock,
-                               keypad=args.keypad)
+                               keypad=args.keypad, facts=facts)
         warm = await warm_agent.turn("Hello.")
         args.warmed_s = warm.whole_s
         say(f"\nModel warmed: {warm.whole_s:.1f} s for one turn{f' ({warm.error})' if warm.error else ''}")
@@ -248,10 +255,10 @@ async def run(args: argparse.Namespace) -> int:
         say(f"\nConversations heard by {spec}")
         turns_by[spec] = []
         for script in scripts:
-            tools = scenario.toolset((keypad_tool(script.keys),) if args.keypad else ())
+            tools = scenario.toolset((keypad_tool(script.keys),) if args.keypad else (), without)
             agent = CallAgent(paced, args.model, scenario, tools, settings=CallSettings(think=args.think),
                               max_steps=args.max_steps, first_clause_chars=args.first_clause, clock=clock,
-                              keypad=args.keypad)
+                              keypad=args.keypad, facts=facts)
             replies, silent = [], 0
             for n, said in enumerate(lines[script.id], 1):
                 text = heard.get((spec, script.id, n), "")
@@ -280,7 +287,8 @@ async def run(args: argparse.Namespace) -> int:
                                                      for st in steps),
                                  "keyed": ", ".join(f"{w} {d}" for st in steps for w, d in st["keyed"]),
                                  "error": turn.error})
-            score = score_call(script, replies, tools.log, tools.state, scenario.data, unanswered=silent)
+            score = score_call(script, replies, tools.log, tools.state, scenario.data, unanswered=silent,
+                               facts=facts)
             failed = "; ".join(f"{c.name}: {c.detail}" for c in score.checks if not c.ok)
             call_rows.append({"hearing": spec, "call": script.id, "title": script.title, "passed": score.passed,
                               "failed": failed})
@@ -328,19 +336,19 @@ async def run(args: argparse.Namespace) -> int:
             for k, piece in enumerate(t["pieces"], 1):
                 await throttle.wait()
                 s = await voice.speak(piece["text"])
-                voiced[spec][(t["call"], t["turn"], k)] = (s.seconds, s.audio_s)
+                voiced[spec][(t["call"], t["turn"], k)] = (s.playable_s, s.audio_s)
                 pieces_audio[spec][(t["call"], t["turn"], k)] = s.wav
                 if s.wav:
                     (folder / f"{t['call']}-{t['turn']}-{k}.wav").write_bytes(s.wav)
                 errors += 1 if s.error else 0
                 tts_rows.append({"voice": spec, "engine": voice.label, "where": voice.where, "call": t["call"],
                                  "turn": t["turn"], "piece": k, "text": piece["text"], "chars": len(piece["text"]),
-                                 "seconds": s.seconds, "audio_s": s.audio_s,
+                                 "seconds": s.seconds, "playable_s": s.playable_s, "audio_s": s.audio_s,
                                  "real_time_factor": s.seconds / s.audio_s if s.audio_s else None,
                                  **{f"net_{key}": v for key, v in (s.net or {}).items()},
                                  "new_connection": s.new_connection, "error": s.error})
         mine = [r for r in tts_rows if r["voice"] == spec]
-        first = [r["seconds"] for r in mine if r["piece"] == 1]
+        first = [r["playable_s"] for r in mine if r["piece"] == 1]
         say(f"  {spec}: first piece median {fmt(med(first))} s over {len(mine)} pieces"
             f"{f', {errors} failed' if errors else ''}")
 
@@ -551,7 +559,8 @@ def report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows, c
     lines = [f"# Hearing x voice benchmark: {scenario.name}", "",
              f"**Model** {args.model} · **When** {datetime.now():%Y-%m-%d %H:%M} · **Fixed end-of-turn silence** "
              f"{silence:.2f} s · **End-of-turn model** {'Smart Turn v3.2' if smart else 'off'} · **Keypad** "
-             f"{'on' if args.keypad else 'off'} · **Model warmed first** "
+             f"{'on' if args.keypad else 'off'} · **Fixed facts** "
+             f"{'in the prompt' if args.facts_in_prompt else 'from a tool'} · **Model warmed first** "
              f"{f'yes ({args.warmed_s:.1f} s)' if getattr(args, 'warmed_s', None) is not None else 'no'} · "
              f"**Calls** {len({r['call'] for r in call_rows})} · voiced "
              f"conversation: the one heard by `{short(reference)}`", "",
@@ -664,12 +673,13 @@ def report(args, scenario, reference, summary, asr_rows, model_rows, tts_rows, c
               "|---|---|---|---|---|---|---|"]
     for spec, voice in voices.items():
         mine = [r for r in tts_rows if r["voice"] == spec]
-        first = [r["seconds"] for r in mine if r["piece"] == 1]
+        first = [r["playable_s"] for r in mine if r["piece"] == 1]
         nets = [r["net_connect"] + r["net_upload"] + r["net_download"] for r in mine if "net_connect" in r]
         lines.append(f"| {spec} | {voice.where} | {fmt(med(first))} s | {fmt(p90(first))} s | "
                      f"{fmt(med(r['real_time_factor'] for r in mine))} | {fmt(med(nets))} s | "
                      f"{sum(1 for r in mine if r['error'])} |")
-    lines += ["", "Make / speak time below 1 means the voice makes audio faster than it plays.", "",
+    lines += ["", "Make / speak time below 1 means the voice makes audio faster than it plays. A streamed voice's "
+              "first piece counts from when its audio could start playing and run without a gap.", "",
               "## Calls", "", "| Hearing | Call | Result |", "|---|---|---|"]
     for r in call_rows:
         lines.append(f"| {short(r['hearing'])} | {r['call']} | {'pass' if r['passed'] else 'fail: ' + r['failed']} |")

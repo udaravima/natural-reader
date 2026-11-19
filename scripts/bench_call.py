@@ -49,7 +49,8 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--scenario", default="hotel", help="a pack in server/calls/scenarios, or a folder (default hotel)")
     p.add_argument("--model", required=True, help="chat model, provider:name, e.g. gemini:gemini-3.1-flash-lite")
     p.add_argument("--hear", default="text", help="text | whisper:<model id> | google:<recognizer> (default text)")
-    p.add_argument("--voice", default="none", help="none | kokoro[:<voice>] | google[:<model>[:<voice>]]")
+    p.add_argument("--voice", default="none", help="none | kokoro[:<voice>] | google[:<model>[:<voice>]] | "
+                                                   "chirp:<voice name> | chirp-stream:<voice name>")
     p.add_argument("--caller-voice", default="kokoro:bm_george",
                    help="who speaks the caller's lines when there's no recording (default kokoro:bm_george)")
     p.add_argument("--caller-audio", type=Path, help="a folder of recordings named <call id>-<turn>.wav")
@@ -68,6 +69,9 @@ def parse(argv: list[str]) -> argparse.Namespace:
                    help="cut a long opening at a comma past this many characters (Talk's default 30; 0 never)")
     p.add_argument("--max-steps", type=int, default=4, help="model requests per turn, the last without tools")
     p.add_argument("--think", default="off", help="the model's thinking level: off | low | medium | high")
+    p.add_argument("--facts-in-prompt", action="store_true",
+                   help="tell the agent the pack's fixed facts in its instructions and leave out the tool that serves "
+                        "them ([agent.facts]): a question about them then takes one model request, not two")
     p.add_argument("--out", type=Path, help="output folder (default bench-out/<scenario>-<time>)")
     args = p.parse_args(argv)
     args.command = "run"
@@ -96,6 +100,8 @@ async def run(args: argparse.Namespace) -> int:
     try:
         scenario = load_scenario(args.scenario)
         scripts = [scenario.call(c.strip()) for c in args.calls.split(",")] if args.calls else list(scenario.calls)
+        if args.facts_in_prompt and scenario.facts is None:
+            raise ScenarioError(f"{scenario.id} has no [agent.facts] table: --facts-in-prompt has nothing to tell")
         ears = make_ears(args.hear)
         voice = make_voice(args.voice)
         caller = make_voice(args.caller_voice) if ears.needs_audio else None
@@ -116,13 +122,15 @@ async def run(args: argparse.Namespace) -> int:
     (out / "audio").mkdir(parents=True, exist_ok=True)
     silence = args.silence_ms / 1000
     throttle = Throttle(args.voice_rpm)
+    facts = scenario.facts if args.facts_in_prompt else None
     setup = {"scenario": scenario.id, "scenario_name": scenario.name, "repeat": args.repeat, "args": {
         k: str(v) for k, v in vars(args).items() if k != "command"},
         "shown": {"Model": args.model, "Hearing": f"{ears.label} ({ears.where})",
                   "Voice": f"{voice.label} ({voice.where})" + (", first piece only" if args.speak == "first" else ""),
                   "Caller": (f"recordings in {args.caller_audio}, else " if args.caller_audio else "")
                   + (caller.label if caller else "the script's text"),
-                  "Silence": f"{silence:.2f} s", "When": f"{datetime.now():%Y-%m-%d %H:%M}"}}
+                  "Silence": f"{silence:.2f} s", **({"Facts": "in the prompt, without their tool"} if facts else {}),
+                  "When": f"{datetime.now():%Y-%m-%d %H:%M}"}}
     print(" · ".join(f"{k}: {v}" for k, v in setup["shown"].items()), flush=True)
 
     async def caller_audio(call_id: str, n: int, said: str) -> bytes:
@@ -140,9 +148,10 @@ async def run(args: argparse.Namespace) -> int:
     calls, turns = [], []
     for repeat in range(args.repeat):
         for script in scripts:
-            tools = scenario.toolset()
+            tools = scenario.toolset(without=(facts.tool,) if facts else ())
             agent = CallAgent(router, args.model, scenario, tools, settings=CallSettings(think=args.think),
-                              max_steps=args.max_steps, first_clause_chars=args.first_clause, clock=clock)
+                              max_steps=args.max_steps, first_clause_chars=args.first_clause, clock=clock,
+                              facts=facts)
             replies: list[str] = []
             silent = 0
             print(f"\n{script.id}{f' #{repeat + 1}' if args.repeat > 1 else ''}: {script.title}", flush=True)
@@ -175,7 +184,7 @@ async def run(args: argparse.Namespace) -> int:
                     spoken.append(s)
                     if s.wav:
                         (out / "audio" / f"{script.id}-{n}-agent-{k}.wav").write_bytes(s.wav)
-                play = playback([ready for _, ready in pieces], [s.seconds for s in spoken],
+                play = playback([ready for _, ready in pieces], [s.playable_s for s in spoken],
                                 [s.audio_s for s in spoken], parallel=voice.parallel)
                 first_sound = (silence + (heard.seconds if ears.needs_audio else 0.0) + play["first_audio_s"]
                                if pieces else None)
@@ -186,9 +195,10 @@ async def run(args: argparse.Namespace) -> int:
                                        "error": r.result.get("error")} for r in turn.tool_runs],
                         "held_s": turn.held_s, "empty_after_tool": turn.empty_after_tool, "model_error": turn.error,
                         "model_requests": requests, "model_connect_s": sum(r["connect"] for r in requests),
-                        "pieces": [{"text": t, "ready_s": ready, "voice_s": s.seconds, "audio_s": s.audio_s}
+                        "pieces": [{"text": t, "ready_s": ready, "voice_s": s.seconds,
+                                    "playable_s": s.playable_s, "audio_s": s.audio_s}
                                    for (t, ready), s in zip(pieces, spoken)],
-                        "voice_first_s": spoken[0].seconds if spoken else None,
+                        "voice_first_s": spoken[0].playable_s if spoken else None,
                         "voice_first_net": spoken[0].net if spoken else None,
                         "voice_first_new_connection": spoken[0].new_connection if spoken else None,
                         "voice_errors": [s.error for s in spoken if s.error],
@@ -205,7 +215,8 @@ async def run(args: argparse.Namespace) -> int:
                 if ears.needs_audio and heard.text != said:
                     print(f"     heard: {heard.text}", flush=True)
                 print(f"     agent: {turn.text.strip() or '(' + (turn.error or 'silence') + ')'}", flush=True)
-            score = score_call(script, replies, tools.log, tools.state, scenario.data, unanswered=silent)
+            score = score_call(script, replies, tools.log, tools.state, scenario.data, unanswered=silent,
+                               facts=facts)
             calls.append({"id": script.id, "repeat": repeat, "title": script.title, "passed": score.passed,
                           "checks": [asdict(c) for c in score.checks]})
             print(f"  → {'PASS' if score.passed else 'FAIL'}"

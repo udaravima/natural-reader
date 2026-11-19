@@ -35,6 +35,8 @@ def test_the_model_costs_its_tokens(prices):
 def test_chirp_voices_cost_by_the_character_and_gemini_tts_by_tokens(prices):
     chirp = price_for(prices, "voice", "chirp:en-IN-Chirp3-HD-Kore")
     assert voice_usd(chirp, 1000, 60) == pytest.approx(0.03)
+    streamed = price_for(prices, "voice", "chirp-stream:en-US-Chirp3-HD-Kore")
+    assert voice_usd(streamed, 1000, 60) == pytest.approx(0.03)   # streaming is billed as Chirp 3 HD
     lite = price_for(prices, "voice", "google:gemini-2.5-flash-lite-preview-tts:Kore")
     assert voice_usd(lite, 400, 10) == pytest.approx((100 * 0.5 + 250 * 10.0) / 1e6)
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from itertools import combinations_with_replacement
 from typing import Any
 
-from .scenario import CallScript
+from .scenario import CallScript, Facts
 from .simtools import ToolRun
 
 _DIGIT_WORDS = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
@@ -136,9 +136,10 @@ def _numbers(value: Any, into: set[int]) -> set[int]:
     return into
 
 
-def _allowed(runs: list[ToolRun]) -> set[int]:
-    """Every number a tool returned, the sum of any two, and two to four times one: "two rooms come to"."""
-    base = set()
+def _allowed(runs: list[ToolRun], told: Any = None) -> set[int]:
+    """Every number a tool returned or the agent was told up front (`told`), the sum of any two, and two to four
+    times one: "two rooms come to"."""
+    base = _numbers(told, set())
     for run in runs:
         _numbers(run.result, base)
     big = sorted(n for n in base if n >= 100)
@@ -184,15 +185,17 @@ def _booking_check(wanted: dict[str, Any], state: dict[str, Any], original: dict
 
 
 def score_call(script: CallScript, replies: list[str], runs: list[ToolRun], state: dict[str, Any],
-               original: dict[str, Any], *, unanswered: int = 0) -> CallScore:
+               original: dict[str, Any], *, unanswered: int = 0, facts: Facts | None = None) -> CallScore:
     """`replies`: what the agent said, turn by turn; `runs`: every tool run in the call; `state`: the data at the
-    end; `original`: the scenario's data before the call; `unanswered`: turns that ended in silence."""
+    end; `original`: the scenario's data before the call; `unanswered`: turns that ended in silence; `facts`: facts
+    the agent was told up front, whose tool it wasn't offered and whose amounts are not invented."""
     e = script.expect
     checks: list[Check] = []
     ok_names = {r.name for r in runs if r.ok}
     ran_names = {r.name for r in runs}
-    if e.tools:
-        missing = [t for t in e.tools if t not in ok_names]
+    expected = [t for t in e.tools if not facts or t != facts.tool]
+    if expected:
+        missing = [t for t in expected if t not in ok_names]
         detail = "; ".join(f"{t} {'ran only with errors' if t in ran_names else 'never ran'}" for t in missing)
         checks.append(Check("tools", not missing, detail or "all ran"))
     if e.never_tools:
@@ -203,7 +206,7 @@ def score_call(script: CallScript, replies: list[str], runs: list[ToolRun], stat
         missing_groups = [g for g in e.says if not any(f" {normalize(p)} " in said for p in g)]
         checks.append(Check("says", not missing_groups,
                             "; ".join("never said " + " / ".join(g) for g in missing_groups) or "all said"))
-    allowed = _allowed(runs)
+    allowed = _allowed(runs, facts.answers if facts else None)
     invented = sorted({n for reply in replies for n in money(reply)} - allowed)
     checks.append(Check("money", not invented,
                         f"said {', '.join(f'{n:,}' for n in invented)}, which no tool returned" if invented

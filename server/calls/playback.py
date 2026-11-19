@@ -28,3 +28,14 @@ def playback(ready_s: list[float], synth_s: list[float], audio_s: list[float], *
         end = start + audio_s[i]
     return {"first_audio_s": made[0], "stalls_s": stalls, "longest_stall_s": longest, "finished_s": end,
             "audio_s": sum(audio_s), "gaps_s": gaps}
+
+
+def stream_start(arrivals: list[tuple[float, float]]) -> float | None:
+    """The earliest a streamed voice's audio can start playing and run to the end without a gap. `arrivals`: each
+    piece's (arrival time, seconds of audio), in order. A piece arriving at t after s seconds of earlier audio needs
+    playback to have started no sooner than t - s; None when nothing came."""
+    start, before = None, 0.0
+    for at, seconds in arrivals:
+        start = at - before if start is None else max(start, at - before)
+        before += seconds
+    return start
