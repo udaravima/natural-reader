@@ -228,6 +228,15 @@ async def test_a_sentence_goes_to_chirp_with_its_language_and_voice_name(text, l
     assert sf.read(io.BytesIO(wav))[1] == 24000 and abs(seconds - 0.5) < 0.01
 
 
+async def test_a_sample_rate_is_sent_only_when_asked_for():
+    seen = []
+    await _chirp(_recording(seen))
+    await chat_voice.chirp_speak(ENGLISH, "Kore", 1.0, CREDS, sample_rate_hz=8000,
+                                 transport=httpx.MockTransport(_recording(seen)), token=_token)
+    assert seen[0]["audioConfig"] == {"audioEncoding": "LINEAR16"}
+    assert seen[1]["audioConfig"] == {"audioEncoding": "LINEAR16", "sampleRateHertz": 8000}
+
+
 async def test_chirp_takes_the_speed_and_the_configured_english():
     seen = []
     await _chirp(_recording(seen), speed=1.25, env={**CREDS, "GOOGLE_TTS_LANGUAGE": "en-IN"})

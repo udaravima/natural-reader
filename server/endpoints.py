@@ -39,6 +39,13 @@ def _speak(text: str, voice: str, speed: float):
     return kokoro.create(phonemes(kokoro.tokenizer, text, voice), voice=voice, speed=speed, is_phonemes=True)
 
 
+async def kokoro_pcm(text: str, voice: str, speed: float):
+    """(audio, sample rate) from Kokoro for a caller outside the HTTP routes (the phone lines). It takes the same
+    lock as `synthesize`, because Kokoro isn't thread-safe, and runs the blocking `_speak` in the executor."""
+    async with inference_lock:
+        return await asyncio.get_event_loop().run_in_executor(None, lambda: _speak(text, voice, speed))
+
+
 async def _client_gone(http_request: Request) -> bool:
     """A browser that aborts (the audiobook's Cancel, a closed tab) doesn't stop
     a running handler: without these checks the server synthesized every
