@@ -14,6 +14,7 @@ from server.chat.context import Prefetch
 from server.chat import reader
 from server.chat.reader import BatchCall
 from server.chat.orchestrator import TurnRequest, run_turn
+from server.chat.prompt import PHONE_RULE
 from server.chat.tools import TurnTools
 from server.chat.tools import extract_from_documents as ex_tool
 from server.chat.tools import search_documents as sd_tool
@@ -122,6 +123,19 @@ async def test_reasoning_closes_before_text(conn):
     assert types(events)[2:8] == ["reasoning-start", "reasoning-delta", "reasoning-end",
                                   "text-start", "text-delta", "text-end"]
     assert (await _msg(conn, claim.turn_id))[3] == "think"
+
+
+async def test_phone_turn_offers_no_web_tools(conn, web_auto):
+    """A phone turn never searches the web, whatever the web-search option says, and its rules carry the phone rule."""
+    router = FakeRouter(steps=[[TextDelta("Hello."), Usage(1, 1), Finish("stop")]])
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    assert req.channel == "chat"
+    req = dataclasses.replace(req, channel="phone", spoken=True)
+    _ = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    sent = router.calls[0]
+    assert "web_search" not in sent["tools"] and "read_web_pages" not in sent["tools"]
+    assert PHONE_RULE in sent["messages"][0].content
 
 
 async def test_one_tool_round_then_answer(conn, monkeypatch, web_auto):

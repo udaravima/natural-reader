@@ -821,6 +821,13 @@ def test_a_spoken_turn_is_told_how_to_talk():
     assert "read aloud" not in system_rules(None, [], has_pins=False)
 
 
+def test_phone_rule_only_on_phone_turns():
+    from server.chat.prompt import PHONE_RULE, SPOKEN_RULE
+    phone = system_rules(None, [], has_pins=False, spoken=True, phone=True)
+    assert PHONE_RULE in phone and phone.index(SPOKEN_RULE) < phone.index(PHONE_RULE)
+    assert PHONE_RULE not in system_rules(None, [], has_pins=False, spoken=True)
+
+
 def test_the_clock_line_comes_before_the_live_line_and_only_with_the_tool():
     """"Anything about today" sends a question to the web: a question about the time must reach the clock first."""
     with_clock = system_rules(FIELD(), [*DOC_TOOLS, *AUTO_WEB, TOOLS["current_time"]], has_pins=False)

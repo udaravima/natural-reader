@@ -325,10 +325,16 @@ SPOKEN_RULE = (
     "headings, links or symbols.")
 
 
+PHONE_RULE = (
+    "This is a phone call. The caller can't see anything: name a document when it helps, but don't read out page "
+    "numbers, links or file names unless asked. If the documents don't have the answer, say so. If you didn't catch "
+    "something, ask the caller to repeat it.")
+
+
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
                  project: ProjectScope | None = None, spoken: bool = False,
-                 placed: frozenset[str] = frozenset(), persona: bool = True, assistant_name: str = "") -> str:
+                 phone: bool = False, placed: frozenset[str] = frozenset(), persona: bool = True, assistant_name: str = "") -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -366,4 +372,6 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
         parts.append(_TOOL_RESULTS_ARE_DATA)
     if spoken:
         parts.append(SPOKEN_RULE)
+    if phone:
+        parts.append(PHONE_RULE)
     return "\n\n".join(parts)

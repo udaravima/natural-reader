@@ -122,6 +122,8 @@ class TurnRequest:
     real_values: bool = False
     # The reply will be read aloud in the speech window.
     spoken: bool = False
+    # Where the turn is happening: "chat" (the web client) or "phone" (a line's call, server/phone/).
+    channel: str = "chat"
     # The profile the person picked for this turn (chat/profile_text.py); None: the chat's own, else the default.
     profile_id: str | None = None
 
@@ -304,6 +306,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             web_mode = "ask"
         if web_mode == "ask" and req.spoken:
             web_mode = "off"   # "ask" ends the turn on a card to press, and a spoken conversation has none
+        if req.channel == "phone":
+            web_mode = "off"   # a caller can't be asked to approve a search, and nothing from the web is read down a line
         default_timezone = await _deployment_timezone()   # the "Today" line's fallback, and current_time's
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                timezone=req.timezone, default_timezone=default_timezone,
@@ -335,7 +339,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             assistant_name=profile.name if profile.builtin else "",
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
             default_timezone=default_timezone,
-            model=req.model_id, spoken=req.spoken), cfg)
+            model=req.model_id, spoken=req.spoken, channel=req.channel), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)

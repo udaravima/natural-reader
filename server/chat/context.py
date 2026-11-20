@@ -331,6 +331,7 @@ class TurnInput:
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
     default_timezone: str = "UTC"            # the deployment's zone: the "Today" line's fallback when the browser sent none
     spoken: bool = False                     # the reply will be read aloud (prompt.system_rules)
+    channel: str = "chat"                    # "phone" adds the phone rule (prompt.PHONE_RULE)
     model: str = ""                          # the turn's canonical model id (the form begin_turn stores on user rows)
 
 
@@ -374,7 +375,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
                          placed=turn.placed, persona=turn.persona, assistant_name=turn.assistant_name,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None),
-                         spoken=turn.spoken)
+                         spoken=turn.spoken, phone=turn.channel == "phone")
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     # The new message's text files cost their characters; only images and audio take the flat estimate.
     current_files = sum(len(_attachment_text(a)) for a in turn.attachments if a.kind == "text")
