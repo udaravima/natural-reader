@@ -7,9 +7,9 @@ from server.speech import window
 W = 512   # samples in a window: 32 ms at 16 kHz
 
 
-def feed(probs, settings=None):
+def feed(probs, settings=None, **kw):
     """Run the scores through a segmenter; returns [(window index, event)]. Window i is filled with i + 1."""
-    seg = Segmenter(settings or window.settings({}))
+    seg = Segmenter(settings or window.settings({}), **kw)
     got = []
     for i, p in enumerate(probs):
         got += [(i, e) for e in seg.step(p, np.full(W, i + 1, dtype=np.float32))]
@@ -72,3 +72,29 @@ def test_the_knobs_are_the_settings():
     got = feed([0.9] * 2 + [0.0] * 4, knobs)                    # 2 windows of speech; 4 of silence = 128 >= 100
     assert kinds(got) == [SpeechStarted, SpeechEnded]
     assert got[-1][1].clip.size == 6 * W
+
+
+# --- the cap on a run (R5.8): talk, a TV or hold music that never leaves silence_ms of quiet ---
+
+def test_a_run_ends_at_the_cap_and_the_next_window_opens_a_new_one():
+    got = feed([0.9] * 25, max_run_s=0.32)                     # ceil(320 / 32) = 10 windows a run
+    assert kinds(got) == [SpeechStarted, SpeechEnded, SpeechStarted, SpeechEnded]
+    assert [i for i, e in got if isinstance(e, SpeechEnded)] == [9, 19]
+    first, second = (e.clip for _, e in got if isinstance(e, SpeechEnded))
+    assert first.size == second.size == 10 * W                 # bounded, and no pre-roll repeats the first clip
+    assert first[-1] == 10 and second[0] == 11
+
+
+def test_a_cap_reached_before_min_speech_is_a_misfire():
+    assert kinds(feed([0.9] * 12, max_run_s=0.16)) == [Misfire, Misfire]   # 5-window runs, 8 needed to start
+
+
+def test_a_hum_under_vad_start_cannot_hold_a_run_past_the_cap():
+    """0.4 keeps a run going (>= vad_stay) but can't open one (< vad_start): once capped, the hum is between runs."""
+    hum = [0.9] * 8 + [0.4] * 100
+    assert kinds(feed(hum)) == [SpeechStarted]                                # held open for good
+    assert kinds(feed(hum, max_run_s=0.64)) == [SpeechStarted, SpeechEnded]   # ends at 20 windows, stays ended
+
+
+def test_no_cap_keeps_a_run_open():
+    assert kinds(feed([0.9] * 2000, max_run_s=None)) == [SpeechStarted]       # 64 s, one run

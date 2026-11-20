@@ -65,6 +65,17 @@ def test_numbers_and_bad_numbers(caplog):
     assert "PHONE_MAX_CALLS" in caplog.text
 
 
+def test_max_utterance_s(caplog):
+    """R5.8: the longest stretch of caller sound heard as one clip; 30 s unless set, 5 to 120."""
+    assert load_phone_config({}).max_utterance_s == 30
+    assert load_phone_config({"PHONE_MAX_UTTERANCE_S": "12.5"}).max_utterance_s == 12.5
+    for bad in ("4", "121", "-1", "forever", "nan"):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert load_phone_config({"PHONE_MAX_UTTERANCE_S": bad}).max_utterance_s == 30
+        assert "PHONE_MAX_UTTERANCE_S" in caplog.text, bad
+
+
 def test_address_helpers():
     assert normalize_ip("::ffff:192.0.2.9") == "192.0.2.9"
     assert normalize_ip("2001:db8::1") == "2001:db8::1"
