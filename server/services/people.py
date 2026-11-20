@@ -116,7 +116,7 @@ async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
     if "@" in q:
         cur = await conn.execute(
             f"SELECT {cols} FROM users u WHERE lower(u.email) = lower(%s) "
-            "AND u.status IN ('active', 'pending') AND u.id <> %s", (q, caller_id))
+            "AND u.status IN ('active', 'pending') AND u.kind = 'person' AND u.id <> %s", (q, caller_id))
         exact = [_result(r, cfg.show_email) for r in await cur.fetchall()]
         if exact:
             logger.debug("directory lookup: exact match, %d result(s)", len(exact))
@@ -139,7 +139,7 @@ async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
         matches.append("lower(u.email) LIKE %s")
         params.append(pattern)
     statuses = "('active', 'pending')" if everyone else "('active')"
-    where = f"u.status IN {statuses} AND u.id <> %s AND ({' OR '.join(matches)})"
+    where = f"u.kind = 'person' AND u.status IN {statuses} AND u.id <> %s AND ({' OR '.join(matches)})"
     params = [caller_id, *params]
     if mode == "domain":
         where += " AND lower(split_part(u.email, '@', 2)) = %s"
@@ -153,14 +153,16 @@ async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
     return found
 
 
-async def assert_addable(conn, user_id: str) -> None:
+async def assert_addable(conn, user_id: str, *, allow_line: bool = False) -> None:
     """404 "User not found" unless `user_id` is an existing account that isn't
-    disabled (A0 §4: disabled people can't be added or shared with)."""
+    disabled (A0 §4: disabled people can't be added or shared with). A phone
+    line's service user counts as not found unless `allow_line`: only the phone
+    line code adds one, as a project reader."""
     try:
         uuid.UUID(str(user_id))
     except ValueError:
         raise refusal(404, "not_found", "User not found")
-    cur = await conn.execute("SELECT status FROM users WHERE id = %s", (str(user_id),))
+    cur = await conn.execute("SELECT status, kind FROM users WHERE id = %s", (str(user_id),))
     row = await cur.fetchone()
-    if row is None or row[0] == "disabled":
+    if row is None or row[0] == "disabled" or (row[1] == "line" and not allow_line):
         raise refusal(404, "not_found", "User not found")

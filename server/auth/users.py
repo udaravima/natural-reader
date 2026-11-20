@@ -33,8 +33,15 @@ async def get_user(conn, user_id: str) -> dict[str, Any] | None:
     return _row(await cur.fetchone())
 
 
+async def is_line(conn, user_id: str) -> bool:
+    """True for a phone line's service user. The admin user routes refuse it: it is edited through its line."""
+    cur = await conn.execute("SELECT kind FROM users WHERE id = %s", (user_id,))
+    row = await cur.fetchone()
+    return row is not None and row[0] == "line"
+
+
 async def list_users(conn) -> list[dict[str, Any]]:
-    cur = await conn.execute(f"SELECT {_COLS} FROM users ORDER BY created_at")
+    cur = await conn.execute(f"SELECT {_COLS} FROM users WHERE kind = 'person' ORDER BY created_at")
     return [_row(r) for r in await cur.fetchall()]
 
 
@@ -63,7 +70,7 @@ async def search_users(
     `created_at, id`, so a page boundary is stable. `limit=None` = no limit.
     Everything user-supplied goes in as a parameter; the SQL text is fixed.
     """
-    where: list[str] = []
+    where: list[str] = ["kind = 'person'"]  # a phone line's service user is never a person
     params: dict[str, Any] = {}
     q = (q or "").strip()
     if q:
@@ -117,7 +124,8 @@ async def set_capabilities(conn, user_id: str, capabilities) -> None:
 
 
 async def _fetch_by(conn, where: str, params) -> dict[str, Any] | None:
-    cur = await conn.execute(f"SELECT {_COLS} FROM users WHERE {where}", params)
+    """A person's row. A line's service user (kind 'line') is never found here, so no sign-in can link to it."""
+    cur = await conn.execute(f"SELECT {_COLS} FROM users WHERE kind = 'person' AND {where}", params)
     return _row(await cur.fetchone())
 
 
@@ -160,7 +168,7 @@ async def resolve_or_provision_user(
     if found:
         await conn.execute(
             "UPDATE users SET email=%s, display_name=COALESCE(%s, display_name), "
-            f"{_NAMES_SET}, updated_at=now() WHERE id=%s",
+            f"{_NAMES_SET}, updated_at=now() WHERE id=%s AND kind = 'person'",
             (email, display_name, username, first_name, last_name, found["id"]),
         )
         if capabilities is not None:
@@ -178,7 +186,8 @@ async def resolve_or_provision_user(
             raise ValueError("email not verified; cannot claim pre-provisioned account")
         await conn.execute(
             "UPDATE users SET oidc_iss=%s, oidc_sub=%s, "
-            f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() WHERE id=%s",
+            f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() "
+            "WHERE id=%s AND kind = 'person'",
             (iss, sub, display_name, username, first_name, last_name, by_email["id"]),
         )
         if by_email["id"] == SEED_ADMIN_ID:
@@ -190,6 +199,11 @@ async def resolve_or_provision_user(
             await set_capabilities(conn, by_email["id"], capabilities)
         return await get_user(conn, by_email["id"])
 
+    # A line's service user can hold the email without being found above; the email is taken either way.
+    cur = await conn.execute("SELECT 1 FROM users WHERE email=%s AND kind = 'line'", (email,))
+    if await cur.fetchone():
+        raise ValueError("email already linked to another identity")
+
     # 3) Brand-new identity. Atomically claim the still-unlinked seed admin
     #    (first-user-admin). The conditional UPDATE serializes concurrent first
     #    logins via a row lock: exactly one flips oidc_sub from NULL, the rest
@@ -198,7 +212,7 @@ async def resolve_or_provision_user(
     cur = await conn.execute(
         "UPDATE users SET oidc_iss=%s, oidc_sub=%s, email=%s, "
         f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() "
-        "WHERE id=%s AND oidc_sub IS NULL AND email=%s",
+        "WHERE id=%s AND oidc_sub IS NULL AND email=%s AND kind = 'person'",
         (iss, sub, email, display_name, username, first_name, last_name, SEED_ADMIN_ID,
          SEED_SENTINEL_EMAIL),
     )
@@ -277,5 +291,11 @@ async def delete_user(conn, user_id: str) -> None:
     """Hard delete. Every referencing table cascades (sessions, PATs,
     inference_usage, library entries, project memberships (projects themselves survive, A0), chat_sessions +
     messages/events). Content is NOT deleted by the cascade — callers must
-    collect the user's docs BEFORE this and GC them after (A1 spec §3)."""
+    collect the user's docs BEFORE this and GC them after (A1 spec §3).
+
+    Refuses a phone line's service user: it goes with its line (phone store), never alone."""
+    cur = await conn.execute("SELECT kind FROM users WHERE id=%s", (user_id,))
+    row = await cur.fetchone()
+    if row is not None and row[0] == "line":
+        raise ValueError("a phone line's service user is deleted with its line")
     await conn.execute("DELETE FROM users WHERE id=%s", (user_id,))

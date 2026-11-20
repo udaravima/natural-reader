@@ -78,9 +78,10 @@ def _same_user(user_id: str, other: str) -> bool:
 
 
 async def put_member(conn, principal, project_id, user_id: str, role: str, *,
-                     show_email: bool) -> dict:
+                     show_email: bool, line: bool = False) -> dict:
+    """`line`: the member is a phone line's service user (only the phone line code sets it)."""
     access = await require_project_role(conn, principal, project_id, "maintainer", lock=True)
-    await people.assert_addable(conn, user_id)
+    await people.assert_addable(conn, user_id, allow_line=line)
     user_id = str(uuid.UUID(user_id))
     current = await project_role(conn, user_id, project_id)
     via = _authority(access, "owner" if "owner" in (role, current) else "maintainer")
