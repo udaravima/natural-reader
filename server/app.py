@@ -21,6 +21,7 @@ from .endpoints import router as tts_router
 from . import google_cloud
 from .speech import openai_engine as openai_speech
 from .llm.router import start_router as start_llm_router, stop_router as stop_llm_router
+from .phone import service as phone_service
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
@@ -158,6 +159,10 @@ def create_app() -> FastAPI:
                     speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
             except Exception:
                 logger.warning("Voice input warm-up skipped", exc_info=True)
+            # The phone lines' AudioSocket listener (off unless PHONE_AUDIOSOCKET_LISTEN is set). Every call needs the
+            # database, so it listens only once that is up. A call reaches the model router only at its first turn,
+            # after the greeting, so the router starting just after this is in time. Never raises.
+            await phone_service.start()
 
         # One attempt, which never raises: the app comes up even when Postgres is down (within one connect
         # timeout), and keeps trying in the background, so a Postgres that boots after the app is picked up
@@ -180,6 +185,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        # Phone calls first: each is hung up and recorded `shutdown`, while the model router, the voices' clients
+        # and the pool are still there for its last turn to close. That turn's final write joins the background
+        # saves that drain_background waits for below.
+        await phone_service.stop()
         stopping = list(_background)
         for task in stopping:
             task.cancel()

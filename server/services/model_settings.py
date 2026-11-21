@@ -257,6 +257,45 @@ def lookup(mapping: Mapping[str, V], model_id: str) -> V | None:
     return None
 
 
+# ---------- whether a model may answer ----------
+
+def console_offers(ms: ModelsSettings, model_id: str) -> bool:
+    """The console can only narrow the environment's list: an empty selection leaves it as it is."""
+    return not ms.chat_models or any(same_model(model_id, chosen) for chosen in ms.chat_models)
+
+
+def model_offered(ms: ModelsSettings, model_id: str, router: Any) -> bool:
+    """The offline half of `model_refusal`: the environment allows the model (a provider serves it, and it is on
+    that provider's INFERENCE_*MODELS list, if any), and the console's chat list offers it. No network."""
+    return router.is_allowed(model_id) and console_offers(ms, router.canonical_id(model_id))
+
+
+async def model_refusal(ms: ModelsSettings, model_id: str, router: Any) -> str | None:
+    """Why `model_id` may not answer now, or None when it may. The one set of rules for a chat turn, a phone call
+    and a line being saved (R10.10, R10.11), in the chat's order:
+    - "not_allowed": `model_offered` says no;
+    - "not_listed": its provider no longer has it (a stale saved id). The provider's list is cached; a provider
+      that can't be reached passes (the router's own fail-open), and the turn reports it.
+    Nothing is asked of the model itself. `ms` is the console's settings, read with their fail-open
+    (`settings_or_env`, or the chat route's own short read)."""
+    if not model_offered(ms, model_id, router):
+        return "not_allowed"
+    if not await router.is_listed(router.canonical_id(model_id)):
+        return "not_listed"
+    return None
+
+
+async def settings_or_env(conn) -> ModelsSettings:
+    """The console's model settings, read on `conn` inside a savepoint, so a failed read leaves the caller's own
+    transaction usable. When they can't be read, the environment's apply (the chat's fail-open)."""
+    try:
+        async with conn.transaction():
+            return await load_models_settings(conn, os.environ)
+    except Exception:  # noqa: BLE001 — a database blip mustn't refuse every model
+        logger.warning("The model settings couldn't be read: using the environment's", exc_info=True)
+        return from_env()
+
+
 # ---------- locality ----------
 
 def is_ollama_cloud(name: str) -> bool:
