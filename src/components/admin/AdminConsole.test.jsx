@@ -368,10 +368,11 @@ describe('AdminConsole — overview', () => {
 describe('AdminConsole — models', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('has a Models tab between Projects and Documents', () => {
+  it('has a Models tab after Projects (and Phone lines) and before Documents', () => {
     mount({ users: [user()], section: null });
     const names = screen.getAllByRole('tab').map((t) => t.textContent);
-    expect(names.indexOf('Models')).toBe(names.indexOf('Projects') + 1);
+    expect(names.indexOf('Models')).toBe(names.indexOf('Phone lines') + 1);
+    expect(names.indexOf('Phone lines')).toBe(names.indexOf('Projects') + 1);
     expect(names.indexOf('Documents')).toBe(names.indexOf('Models') + 1);
   });
 
@@ -405,6 +406,28 @@ describe('AdminConsole — models', () => {
     openSection('People');
     expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Models.');
     expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+describe('AdminConsole — phone lines', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const phoneRoutes = (path) => {
+    if (path === '/v1/admin/phone/lines') return json(200, []);
+    if (path === '/v1/admin/phone/status') return json(200, { listening: false, pbx_address: null, allow: [], active: 0 });
+    if (path === '/v1/admin/phone/voices') return json(200, { engines: [{ engine: 'kokoro', label: 'Kokoro', voices: ['af_heart'] }] });
+    return undefined;
+  };
+
+  it('has a Phone lines section after Projects, and a new line with a name holds the console\'s unsaved-changes prompt', async () => {
+    mount({ users: [user()], section: null, extra: phoneRoutes });
+    const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(tabs.indexOf('Phone lines')).toBe(tabs.indexOf('Projects') + 1);
+    openSection('Phone lines');
+    fireEvent.click(await screen.findByRole('button', { name: 'New line' }));
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Spa' } });
+    openSection('People');
+    expect(await screen.findByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Phone lines.');
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDay, zoneOptions } from './zoneFormat';
+import { formatDay, formatMoment, zoneOptions } from './zoneFormat';
 
 describe('formatDay', () => {
   it('formats a day in the deployment zone', () => {
@@ -35,5 +35,17 @@ describe('zoneOptions', () => {
     } finally {
       Intl.supportedValuesOf = original;
     }
+  });
+});
+
+describe('formatMoment', () => {
+  it('formats day and 24-hour time in the deployment zone', () => {
+    expect(formatMoment('2026-10-25T20:05:00Z', 'Asia/Colombo')).toBe('2026-10-26 01:35');
+    expect(formatMoment('2026-10-25T00:05:00Z', 'UTC')).toBe('2026-10-25 00:05');
+  });
+
+  it('reads an unknown zone as UTC and a non-date as its first 16 characters', () => {
+    expect(formatMoment('2026-10-25T20:05:00Z', 'Nope/Nope')).toBe('2026-10-25 20:05');
+    expect(formatMoment('not a date at all, really', 'UTC')).toBe('not a date at al');
   });
 });
