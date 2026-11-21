@@ -186,6 +186,23 @@ async def update_line(conn, principal, line_id: str, **changes: Any) -> Line:
     return await get_line(conn, line_id)
 
 
+async def restore_access(conn, principal, line_id: str) -> Line:
+    """Make the line's user a reader of its current project again, after a maintainer removed it (R11.4). The same
+    attach path as create and update, so only a maintainer or owner may; a line that has access keeps it unchanged.
+    Raises LookupError for no such line, ValueError for a line with no project."""
+    async with conn.transaction():
+        cur = await conn.execute("SELECT project_id, service_user_id FROM phone_lines WHERE id = %s FOR UPDATE",
+                                 (line_id,))
+        row = await cur.fetchone()
+        if row is None:
+            raise LookupError(f"no phone line {line_id}")
+        if row[0] is None:
+            raise ValueError("a line without a project has no access to restore")
+        await _attach(conn, principal, str(row[0]), str(row[1]))
+    logger.info("phone line %s: project access restored by %s", line_id, principal.user_id)
+    return await get_line(conn, line_id)
+
+
 async def delete_line(conn, principal, line_id: str) -> int:
     """Delete a line, then its service user (its call chats and project membership cascade). Returns how many
     call transcripts went. The line goes first because phone_lines.service_user_id is ON DELETE RESTRICT."""
@@ -299,7 +316,8 @@ async def list_calls(conn, line_id: str, limit: int = 50) -> list[dict]:
 
 
 async def get_call(conn, call_id: str) -> dict | None:
-    """One call with its transcript: `messages`, oldest first (empty for a refused call or a deleted chat)."""
+    """One call with its transcript: `messages`, oldest first (empty for a refused call or a deleted chat). A
+    question and its reply in the same millisecond keep that order, as in the chat store (R11.9)."""
     try:
         uuid.UUID(str(call_id))
     except ValueError:
@@ -313,7 +331,8 @@ async def get_call(conn, call_id: str) -> dict | None:
     if call["session_id"]:
         cur = await conn.execute(
             "SELECT id, role, content, timestamp, status, finish_reason FROM chat_messages "
-            "WHERE session_id = %s ORDER BY timestamp, id", (call["session_id"],))
+            "WHERE session_id = %s ORDER BY timestamp, CASE role WHEN 'user' THEN 1 ELSE 3 END, created_at, id",
+            (call["session_id"],))
         messages = [{"id": i, "role": r, "content": c, "timestamp": t, "status": s, "finish_reason": f}
                     for i, r, c, t, s, f in await cur.fetchall()]
     call["messages"] = messages

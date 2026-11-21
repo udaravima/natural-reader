@@ -36,6 +36,7 @@ from .routers.project_documents import router as project_documents_router
 from .routers.project_uploads import router as project_uploads_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
+from .routers.phone_admin import router as phone_admin_router
 from .routers.settings import router as settings_router
 from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(tools_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(phone_admin_router)
     app.include_router(projects_router)
     app.include_router(project_documents_router)
     app.include_router(project_uploads_router)
