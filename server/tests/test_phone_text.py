@@ -2,13 +2,14 @@
 
 The JSON cases are shared with src/lib/speech/shared.cases.test.js, so the two languages can't drift."""
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from server.speech.base import Transcript
 
-from server.phone.sentences import Piece, SentenceSplitter
+from server.phone.sentences import Piece, SentenceSplitter, plain
 from server.phone.verdict import heard_speech, is_echo, verdict
 
 FIXTURES = Path(__file__).parent / "fixtures" / "speech"
@@ -37,6 +38,28 @@ def test_verdict_cases_match_talk(case):
     else:
         got = is_echo(spec["text"], spec["said"])
     assert got is case["expect"]
+
+
+@pytest.mark.parametrize("text", [
+    "a" * 50000,
+    " _ab" * 12500,
+    " __ab" * 10000,
+    "ab." * 16667,
+    " " * 50000,
+    "[a" * 25000,
+    "[a](" * 75000,
+    "![a](" * 40000,
+    "\n" * 20000,
+], ids=["letters", "underscore words", "double underscore words", "a dotted chain (a guard, not a regression test)",
+        "spaces", "links with no closing bracket", "links with no closing parenthesis",
+        "images with no closing parenthesis", "newlines"])
+def test_plain_takes_linear_time(text):
+    """plain() runs on the event loop every live call shares, and Asterisk drops a call after 2 s with no audio, so
+    one long degenerate reply must not stall it (R15.5). Quadratic rules took 1 to 17 s on all but the dotted chain
+    (figures in .superpowers/sdd/2026-11-20-phone-lines-phase1/task-16-report.md)."""
+    started = time.perf_counter()
+    plain(text)
+    assert time.perf_counter() - started < 0.5
 
 
 def test_end_step_speaks_words_before_a_tool():

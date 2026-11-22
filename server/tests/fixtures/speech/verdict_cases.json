@@ -30,5 +30,7 @@
   {"name": "words from several sentences count together", "fn": "is_echo",
    "input": {"text": "capital of France is Paris", "said": ["The capital of France.", "It is Paris."]}, "expect": true},
   {"name": "an apostrophe stays inside a word", "fn": "is_echo",
-   "input": {"text": "that's what it's about", "said": ["That's what it's about, really."]}, "expect": true}
+   "input": {"text": "that's what it's about", "said": ["That's what it's about, really."]}, "expect": true},
+  {"name": "a file name spoken with dot comes back as echo", "fn": "is_echo",
+   "input": {"text": "architecture dot md", "said": ["Architecture dot md"]}, "expect": true}
 ]

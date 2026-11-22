@@ -43,6 +43,19 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Most file names, web addresses and underscores are read the way they're
+  written.** Chat read-aloud, Talk and phone calls say "dot" in file names and
+  web addresses (`Architecture.md` is "Architecture dot md", `example.com` is
+  "example dot com"), where a voice used to read the dot as the end of a
+  sentence. Each underscore inside a word is said as "underscore"
+  (`room_number` is "room underscore number"), and is no longer taken as
+  emphasis when there are two of them. Abbreviations, decimals, version
+  numbers and degrees (`e.g.`, `3.5`, `v2.3.0`, `B.Com`) keep their dots, and
+  so do some less usual names, for example `.env` (nothing before the dot),
+  `archive.7z` (an extension that starts with a digit), `notes.markdown` (one
+  longer than five letters), `photo.HEIC` (in capitals, and not a common one)
+  and `X.COM` (one letter before the dot). Documents read aloud in the reader,
+  and pages read by the Chrome extension, don't get these rules yet.
 - **Cloud requests reuse their connections.** Every request to Google's
   speech-to-text and Gemini-TTS opened a new connection, and so did nearly
   every chat model request: TCP and TLS set-up (about 0.1 s from Colombo to
