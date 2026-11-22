@@ -53,23 +53,35 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const profileLabel = (p) => (p.enabled === false ? `${p.name} (switched off: answers as the default profile)` : p.name);
 
 // A turn's error (server/phone/call.py: the stats entry's `error`), in words; any other code is a failed answer.
-const TURN_ERRORS = { hearing: 'not heard', voice: 'a sentence was skipped', empty: 'said nothing' };
+// `hearing` (a clip the recognizer failed on) is no turn's error: that entry reads "Not heard".
+const TURN_ERRORS = { voice: 'a sentence was skipped', empty: 'said nothing' };
 
 /**
  * One line per stats entry: "Turn n: first sound X.X s · heard after Y.Y s", then its error in words. The entry's
  * times are seconds since the call started; first sound is first_audio_at - stopped_at (Talk's firstSound), heard
- * after is heard_at - stopped_at (the recognizer's answer). A clip that wasn't heard has no "heard after".
+ * after is heard_at - stopped_at (the recognizer's answer). A clip the recognizer failed on is no turn, so it has no
+ * number (`n` null): it reads "Not heard", with the first sound of the "sorry" it got, if it got one. Other keys
+ * (`babble`) are ignored.
  */
 function turnLine(s, n) {
   const since = (at) => (typeof at === 'number' && typeof s.stopped_at === 'number' ? (at - s.stopped_at).toFixed(1) : null);
   const firstSound = since(s.first_audio_at);
-  const heard = s.error === 'hearing' ? null : since(s.heard_at);
+  if (n === null) return firstSound === null ? 'Not heard' : `Not heard: first sound ${firstSound} s`;
+  const heard = since(s.heard_at);
   const parts = [
     firstSound !== null && `first sound ${firstSound} s`,
     heard !== null && `heard after ${heard} s`,
     s.error && (TURN_ERRORS[s.error] ?? 'the answer failed'),
   ].filter(Boolean);
   return `Turn ${n}: ${parts.join(' · ')}`;
+}
+
+/** The transcript's timing lines. Turns are numbered 1, 2, 3; a misheard clip between them takes no number, so a call
+ * with 3 turns never shows "Turn 4". (A turn whose claim failed, error `begin`, is numbered: the caller asked, and
+ * heard "sorry". The call list's turn count leaves it out.) */
+function turnLines(stats) {
+  let n = 0;
+  return stats.map((s) => turnLine(s, s.error === 'hearing' ? null : (n += 1)));
 }
 
 function lengthText(seconds) {
@@ -731,7 +743,7 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
               ))}
               {open.stats.length > 0 && (
                 <ul data-testid="phone-turn-timings" aria-label="Timings per turn" className={`flex flex-col text-[10px] ${theme.textMuted}`}>
-                  {open.stats.map((s, i) => <li key={i}>{turnLine(s, i + 1)}</li>)}
+                  {turnLines(open.stats).map((text, i) => <li key={i}>{text}</li>)}
                 </ul>
               )}
             </div>

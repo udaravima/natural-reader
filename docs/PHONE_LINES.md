@@ -136,7 +136,7 @@ the listener off (the log says why).
 | `PHONE_MAX_CALLS` | `2` | 1 to 20 | Calls at once across all lines. Each line has its own cap too; a call over either hears "busy". |
 | `PHONE_IDLE_S` | `30` | 1 to 600, **seconds** | Seconds of a silent caller before the assistant asks "Are you still there?". After a second period of silence it says goodbye and hangs up. |
 | `PHONE_CHECKING_S` | `4` | 0.5 to 60, **seconds** | How long a tool (a document search, say) may run before the caller hears one "Still checking" phrase. |
-| `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. Constant background sound at talking level, such as a television next to the phone, still keeps a reply paused, exactly as in Talk: the caller hears silence for up to this long, then about a second of the reply, over and over ([why](#troubleshooting)). Lowering it to 10–15 shortens each silent stretch. |
+| `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. With constant background sound at talking level, such as a television next to the phone, each of the first two stretches pauses the reply for up to this long; once both are judged noise the call is in **babble mode** and the reply plays on through the sound ([how, and what it costs](#troubleshooting)). Lowering it to 10–15 shortens that silent start. |
 
 How the caller is *heard* is not repeated here. The voice-activity thresholds, the
 silence that ends a turn (700 ms), the pre-roll and the noise limits are the **speech
@@ -302,13 +302,44 @@ recognizer, the model's first sentence and the voice's first clause. A model tha
 slow for a phone is the usual cause; a smaller or hosted model, a faster voice (Chirp),
 and `SPEECH_WINDOW_SILENCE_MS` are the levers (the last is shared with Talk).
 
-**A TV or a busy room keeps the reply paused.** As in Talk, sound at talking level over
-the line counts as someone talking. What the caller hears: the reply goes silent for up to
-`PHONE_MAX_UTTERANCE_S` (30 seconds by default), then plays for about a second, then goes
-silent again, and so on. That is because the app pauses the reply when the sound starts,
-cuts the unbroken sound into a clip at the cap, resumes once the recognizer has judged the
-clip not to be speech, and pauses again a quarter of a second into the next stretch. (If
-the recognizer does make out words in the noise, say a TV's, they are taken as the
-caller's.) The lever is `PHONE_MAX_UTTERANCE_S`: lowering it to 10–15 seconds shortens each
-silent stretch, at the cost of cutting a long-winded caller's question into more clips. See
-[DEPLOYMENT.md § Talk in a busy room](DEPLOYMENT.md#talk-in-a-busy-room).
+**A TV or a busy room beside the caller: babble mode.** Sound at talking level over the
+line counts as someone talking. So at first the app does what Talk does: when the sound
+starts it pauses the reply, and it waits for that stretch of sound to end and be judged
+before it answers anything. If the recognizer judges the stretch to be noise, the reply
+carries on. After **two stretches in a row judged noise**, the call is in **babble mode**:
+the sound no longer pauses the reply, which plays on through it, and nothing waits for a
+stretch to end. An echo, a clip the recognizer couldn't make out, or a sound too short to
+count as speech between the two doesn't break the row; quiet does (below). Every stretch
+is still heard and judged, so the caller still gets through. When one is judged to be
+speech (the caller, or a TV whose words the recognizer makes out, which are taken as the
+caller's), the reply is cut there and the question is answered at once, while the room
+carries on.
+
+- **The silent start.** When the sound never pauses, a stretch ends only at
+  `PHONE_MAX_UTTERANCE_S` (30 seconds by default), and what the line is saying, the
+  welcome included, is paused through each of the first two, so the first minute of such
+  a call can be mostly silence. Lowering `PHONE_MAX_UTTERANCE_S` to 10–15 seconds shortens
+  it, at the cost of cutting a long-winded caller's question into more clips.
+- **Only quiet ends it.** A question answered doesn't end babble mode: the room is still
+  loud. It ends when the line has been quiet for about **two and a half seconds** with the
+  default speech window: 2 seconds with no stretch open, plus the quiet that ends a
+  stretch (`SPEECH_WINDOW_SILENCE_MS`, 0.7 s by default), less the quarter of a second of
+  new sound it takes to notice the next one (`SPEECH_WINDOW_MIN_SPEECH_MS`, 250 ms). The
+  next stretch then pauses the reply again, as at the start. The same quiet also starts
+  the count again before babble mode is reached: two stretches judged noise make babble
+  mode only with less than that quiet between them. So in a quiet room a cough now and
+  another a minute later never add up to it, and a caller listening leaves that much quiet
+  all the time; a TV talking rarely does.
+- **What babble mode costs.** A caller who really talks over the answer cuts it off only
+  once their words have been judged, so the reply plays over them until then. Over
+  unbroken sound their words end only when their stretch does, at the cap. And a caller
+  who keeps talking past the end of one stretch into the next reaches the assistant as two
+  questions, the second cutting into the answer to the first, not as one.
+- **On a line that echoes, watch for missed interruptions.** In babble mode the reply keeps
+  playing while the caller talks, so their stretch carries the line's own voice too. One
+  that is mostly the line's own words is judged an echo and ignored.
+
+Babble mode is the phone's own: Talk in the browser still pauses on every stretch of sound
+(for Talk, see [DEPLOYMENT.md § Talk in a busy room](DEPLOYMENT.md#talk-in-a-busy-room)).
+A turn, or a clip the recognizer couldn't make out, judged in babble mode is marked
+`babble` in the call's stored stats; the console doesn't show that yet.

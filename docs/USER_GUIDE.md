@@ -812,8 +812,10 @@ how long, why it ended (caller hung up, reached the time limit, no one spoke, to
 used up, line was busy or closed, something went wrong, app was restarted), the number of
 turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line"),
 with one line per turn under it: "Turn n: first sound X.X s · heard after Y.Y s", both counted
-in seconds from when the caller stopped speaking, plus what went wrong, if anything (not heard,
-a sentence was skipped, said nothing, the answer failed);
+in seconds from when the caller stopped speaking, plus what went wrong, if anything (a
+sentence was skipped, said nothing, the answer failed). Something the caller said that
+couldn't be made out isn't a turn: it has a line of its own, "Not heard", with no number,
+or "Not heard: first sound X.X s" when the line answered it with "Sorry, I didn't get that";
 **Delete call** removes the call and its transcript after you confirm; **Refresh** reloads
 the list. Calls turned away as busy or closed are listed too, with no transcript. No audio
 is kept, and no caller's number.

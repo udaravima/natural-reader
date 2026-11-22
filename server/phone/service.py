@@ -21,10 +21,10 @@ the log knows.
 
 No pool connection is held across a call (R10.4): each step takes its own short connection, which commits as it
 ends, so `begin_turn`, on a connection of its own, finds the chat `open_call` wrote. A connection is waited for at
-most DB_WAIT_S, and the whole gate is bounded at GATE_S (a stalled query is the database-down path). Asterisk drops
-a call that gets no audio from the app for 2 s, so silence goes down the line from connect (a keep-alive pacer with
-nothing queued) until a clip or the call session's own pacer takes over; it stops before either starts, and before
-any hang-up, so two pacers never run at once and nothing follows the 0x00.
+most DB_WAIT_S, and the whole gate, then `open_call`, are each bounded at GATE_S (a stalled query is the database-down
+path). Asterisk drops a call that gets no audio from the app for 2 s, so silence goes down the line from connect (a
+keep-alive pacer with nothing queued) until a clip or the call session's own pacer takes over; it stops before either
+starts, and before any hang-up, so two pacers never run at once and nothing follows the 0x00.
 
 A call is ended from outside only through its media's `hang_up()`, which leads to the session's own end (R10.7): its
 `run()` task is never cancelled.
@@ -65,7 +65,7 @@ LANGUAGE = "en"            # a line's language in phase 1 (phone_lines.language)
 STALE_S = 3600 + 60        # an open call older than the longest call allowed, plus a minute, was left by a crash
 DB_WAIT_S = 1.0            # longest wait for a pool connection at connect: Asterisk drops a silent line after 2 s
 MODEL_CHECK_S = 0.5        # longest wait at connect for the provider's model list, from the same 2 s
-GATE_S = 3.0               # longest the connect-time checks may take (a stalled query); then the database-down path
+GATE_S = 3.0               # longest the connect-time checks, and then open_call, may each take; then the db-down path
 STOP_S = 5.0               # how long stop() waits for the calls it hung up to finish their run() and close_call
 CLOSE_S = 1.0              # then for the server's last connections to close, before they are aborted
 _ID_CHARS = string.digits + string.ascii_lowercase
@@ -393,8 +393,10 @@ class PhoneService:
             return
         session_id = new_session_id()
         try:
-            async with db.get_pool().connection(timeout=DB_WAIT_S) as conn:
-                call_id = await store.open_call(conn, line, session_id=session_id, now_ms=chat_store.now_ms())
+            # Bounded like the gate: the keep-alive holds the caller on the line, so a stalled INSERT (a lock wait, a
+            # stuck server) would otherwise be silence until they hang up. Past GATE_S (TimeoutError) it is the
+            # database-down path.
+            call_id = await asyncio.wait_for(self._open_call(line, session_id), GATE_S)
         except Exception as exc:
             logger.warning("phone line %s: the call couldn't be opened (%s)", line.id, type(exc).__name__)
             await self._say_and_hang_up(live, self._first(gate.clips, "busy"))
@@ -412,6 +414,12 @@ class PhoneService:
         except Exception as exc:
             logger.warning("phone call %s: its end wasn't recorded (%s); it stays open until the listener next "
                            "starts", call_id, type(exc).__name__)
+
+    @staticmethod
+    async def _open_call(line: Line, session_id: str) -> str:
+        """The call's row and its chat, on a short connection of their own (R10.4)."""
+        async with db.get_pool().connection(timeout=DB_WAIT_S) as conn:
+            return await store.open_call(conn, line, session_id=session_id, now_ms=chat_store.now_ms())
 
     def _deps(self, line: Line, gate: _Gate) -> CallDeps:
         """R10.9: the recognizer, the chat engine and the voice a call uses, as Talk and post_turn use them."""

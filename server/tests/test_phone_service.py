@@ -779,6 +779,34 @@ async def test_a_call_that_cannot_be_opened_hears_busy_and_nothing_after_the_han
     assert media.heard() == {BUSY} and media.hang_ups == 1 and sessions == []
 
 
+async def test_a_stalled_open_call_takes_the_database_down_path_within_its_bound(pool, sessions, monkeypatch):
+    # Task 15, E1. The keep-alive keeps a caller on the line, so an INSERT that never returns (a lock wait, a stuck
+    # server) would leave them hearing silence until they hang up. `open_call` is bounded at GATE_S: past it the caller
+    # hears this process's `busy` (the gate read the line's clips), the hang-up follows with nothing after it, and the
+    # line's one slot is free for the next call.
+    line = await make_line(pool, max_calls=1)
+    opened = store.open_call
+
+    async def stuck(*args, **kwargs):
+        await asyncio.sleep(30)
+    monkeypatch.setattr(store, "open_call", stuck)
+    svc = service.PhoneService(CFG)
+    media = FakeMedia(line.id)
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await asyncio.wait_for(svc.handle(media), service.GATE_S + 1.5)
+    assert service.GATE_S < loop.time() - began < service.GATE_S + 1.0
+    assert media.heard() == {BUSY} and media.hang_ups == 1 and sessions == []
+    await no_audio_after_the_hang_up(media)
+    assert svc.status()["active"] == 0
+    monkeypatch.setattr(store, "open_call", opened)
+    again = FakeMedia(line.id)
+    running = asyncio.create_task(svc.handle(again))
+    await until(lambda: len(sessions) == 1)                         # let through, not `busy`: the slot was freed
+    again.caller_hangs_up()
+    await asyncio.wait_for(running, 5)
+
+
 # --- real calls ---
 
 async def test_two_calls_transcribe_concurrently(pool, real_call, caplog):

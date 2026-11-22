@@ -18,6 +18,15 @@ Talk's rules, ported:
 - speech ended: transcribe the clip, then Talk's verdict. Noise or echo resumes the reply where it paused. Speech
   stops it, closes the turn (its `_finalize` saves the reply and gives the claim back), and starts the next turn with
   what the caller actually heard (`Heard`), joined with anything else they said while it stopped.
+Babble mode (R16.1, R16.2), the phone's own: constant talk-level sound (a TV beside the phone) would start a speech run
+again and again, and the reply, and any answer, would wait through each one. So each run decides once, at its speech
+start, whether it "holds": it does in normal mode. Only a holding run pauses the reply, holds a new reply (R7.2) and
+makes the caller's words wait for it. After BABBLE_AFTER noise verdicts in a row the call is in babble mode: new runs
+don't hold, and the open one stops holding. Every clip is still cut, transcribed and judged, and a speech verdict
+cuts the reply and is answered at once (the model keeps what really played before the cut). The room is still loud,
+so that doesn't end babble mode; only QUIET_S with no run open does. That quiet also breaks a row of noise clips in
+normal mode (R16.3), so two coughs a minute apart never make babble mode. An echo, a misheard clip or a misfire
+leaves the count as it is.
 The phone adds: words written before a tool are spoken at once (`text-end`); a filler when a tool starts with nothing
 said yet, and "still checking" once if no text follows for `checking_s`; `sorry` for a failed or empty answer;
 "are you still there?" and then goodbye after silence; goodbye at the call's time limit; `closed` when the budget runs
@@ -57,6 +66,11 @@ from .verdict import verdict
 logger = logging.getLogger(__name__)
 
 AHEAD = 2                 # sentences voiced beyond the one playing (Talk's AHEAD)
+BABBLE_AFTER = 2          # noise verdicts in a row after which a speech start stops pausing the reply (R16.1)
+# Seconds of call time with no run open, from a run's end to the next speech start, that end babble mode (R16.2). The
+# line was quiet for longer: a run ends after silence_ms (704 ms) of quiet, and a speech start is called 256 ms into
+# new sound, so this is about 2.45 s of real quiet with the default speech window.
+QUIET_S = 2.0
 HEARING_RATE = 16000      # what the VAD and the recognizer take
 _UP = HEARING_RATE // 8000
 # resample_poly(x, 2, 1)'s own low-pass filter (scipy's default for that ratio), run with its state carried from frame
@@ -120,7 +134,8 @@ class CallOutcome:
 
 def _stat(stopped_at: float) -> dict[str, Any]:
     """A turn's timings, in seconds since the call started (None: it never got there), and its error, if any. A
-    turn's "first sound" is first_audio_at - stopped_at, the figure Talk's clipTimes calls firstSound."""
+    turn's "first sound" is first_audio_at - stopped_at, the figure Talk's clipTimes calls firstSound. A clip judged
+    while the call was in babble mode also gets `babble: True`; the key is absent otherwise."""
     return {"stopped_at": stopped_at, "heard_at": None, "first_text_at": None, "first_sentence_at": None,
             "first_audio_at": None, "error": None}
 
@@ -227,6 +242,10 @@ class CallSession:
         self._first_audio: dict[str, Any] | None = None   # the stats entry waiting for its first sound
         self._said: _Said | None = None
         self._hearing = False                 # a speech run is open
+        self._holding = False                 # ... and it holds the reply and the answer (R16.2)
+        self._run_ended_at: float | None = None   # clock time of the last run's end (its clip or Misfire)
+        self._row_from = 0.0                  # call time the row of noise clips was last broken by quiet (R16.3)
+        self._noise_streak = 0                # noise verdicts in a row; BABBLE_AFTER or more is babble mode (R16.1)
         self._waiting: deque[_Clip] = deque()  # clips still to transcribe, in order
         self._transcribing: asyncio.Task | None = None
         self._accepted: list[tuple[str, dict[str, Any]]] = []   # what the caller said, for the next turn
@@ -280,14 +299,17 @@ class CallSession:
     def _handle(self, event: object) -> None:
         match event:
             case SpeechStarted():
+                self._quiet_breaks_the_row()
                 self._hearing = True
-                self._pacer.pause()
+                self._holding = not self._babble()
+                if self._holding:
+                    self._pacer.pause()
                 self._suspend_idle()
             case Misfire():
-                self._hearing = False
+                self._run_over()
                 self._settle()
             case _Clip():
-                self._hearing = False
+                self._run_over()
                 self._waiting.append(event)
                 self._drain()
             case _Transcribed():
@@ -309,6 +331,8 @@ class CallSession:
         self._transcribing = None
         clip = event.clip
         clip.stat["heard_at"] = self._at()
+        if self._babble():
+            clip.stat["babble"] = True
         if event.transcript is None:
             clip.stat["error"] = "hearing"
             self._stats.append(clip.stat)
@@ -316,10 +340,49 @@ class CallSession:
         else:
             kind = verdict(event.transcript, self._echoable(clip), self._deps.settings)
             logger.debug("phone call %s: a clip was %s", self._session_id, kind)
+            self._count(kind, clip)
             if kind == "speech":
                 self._accepted.append((event.transcript.text.strip(), clip.stat))
         self._drain()
         self._settle()
+
+    def _babble(self) -> bool:
+        return self._noise_streak >= BABBLE_AFTER
+
+    def _count(self, kind: str, clip: _Clip) -> None:
+        """The count of noise verdicts in a row: noise adds one; speech starts it again, except in babble mode, where
+        the room is still loud (R16.2); an echo leaves it alone, as a misheard clip and a misfire do (they never get
+        here). A noise verdict on a clip that ended before the row was last broken (R16.3) doesn't count: with a slow
+        recognizer it can land after the quiet that ended its row."""
+        was = self._babble()
+        if kind == "noise" and clip.ended_at >= self._row_from:
+            self._noise_streak += 1
+        elif kind == "speech" and not was:
+            self._noise_streak = 0
+        if self._babble() and not was:
+            logger.debug("phone call %s: babble mode on, after %d noise clips in a row", self._session_id,
+                         self._noise_streak)
+            # The run open now (in constant babble there nearly always is one) stops holding, and its pause goes:
+            # otherwise the reply, and the caller's next words, would wait for it, up to PHONE_MAX_UTTERANCE_S more.
+            self._holding = False
+            self._pacer.resume()
+
+    def _quiet_breaks_the_row(self) -> None:
+        """R16.2, R16.3: the count is of noise clips in a row, and quiet breaks the row, in either mode. A speech start
+        after QUIET_S or more with no run open (since the last run's end) is the line gone quiet before it: the count
+        starts again, so this run holds, and babble mode, if it was on, is over. A cough now and a cough a minute later
+        never add up to babble mode."""
+        if self._run_ended_at is None or self._deps.clock() - self._run_ended_at < QUIET_S:
+            return
+        self._row_from = self._at()
+        if self._babble():
+            logger.debug("phone call %s: babble mode off: the line went quiet", self._session_id)
+        self._noise_streak = 0
+
+    def _run_over(self) -> None:
+        self._hearing = False
+        self._holding = False
+        self._run_ended_at = self._deps.clock()
 
     def _echoable(self, clip: _Clip) -> list[str]:
         """Only a clip that began while the line was speaking can be the line's own words (Talk's rule)."""
@@ -330,8 +393,10 @@ class CallSession:
         return said.sentences if said.finished_at is None or began <= said.finished_at else []
 
     def _settle(self) -> None:
-        """Everything that was waiting on the caller has arrived: answer what they said, or carry on."""
-        if self._hearing or self._transcribing or self._waiting or self._switching or self._stopped:
+        """Everything that was waiting on the caller has arrived: answer what they said, or carry on. An open run makes
+        this wait only if it holds (R16.2): in babble mode it is most likely the room, and the wait would last as long
+        as the sound does. Clips already cut are always waited for: the recognizer bounds that wait, not the sound."""
+        if self._holding or self._transcribing or self._waiting or self._switching or self._stopped:
             return
         if self._accepted:
             text = " ".join(said for said, _ in self._accepted)
@@ -385,8 +450,8 @@ class CallSession:
         self._idle_stage = 0
         self._disarm_idle()
         self._pacer.new_reply()          # R7.1: before any of this turn's clips
-        if self._hearing:
-            self._pacer.pause()          # R7.2: a speech run still open holds the new reply too
+        if self._holding:
+            self._pacer.pause()          # R7.2: a holding run still open holds the new reply too (R16.2)
         turn = _Turn(text, heard, stat)
         self._turn = turn
         self._stats.append(stat)
@@ -722,7 +787,7 @@ class CallSession:
         logger.info("phone call %s: ending (%s)", self._session_id, reason)
         self._ending = reason
         self._disarm_idle()
-        self._hearing = False
+        self._hearing = self._holding = False
         self._first_audio = None
         if self._transcribing is not None:
             self._transcribing.cancel()

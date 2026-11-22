@@ -738,12 +738,36 @@ describe('PhoneLinesSection', () => {
     expect(within(timings).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
       'Turn 1: first sound 2.8 s · heard after 1.3 s',
       'Turn 2: first sound 2.5 s · heard after 1.1 s · a sentence was skipped',
-      'Turn 3: not heard',
-      'Turn 4: first sound 3.0 s · heard after 1.0 s · said nothing',
-      'Turn 5: heard after 1.0 s · the answer failed',
+      'Not heard',
+      'Turn 3: first sound 3.0 s · heard after 1.0 s · said nothing',
+      'Turn 4: heard after 1.0 s · the answer failed',
     ]);
     const text = screen.getByTestId('phone-transcript').textContent;
     expect(text.indexOf('Hello.')).toBeLessThan(text.indexOf('Turn 1'));
+  });
+
+  it('numbers only the turns: a misheard clip between two reads "Not heard", with the sorry\'s first sound if any', async () => {
+    // A call with 2 turns (its list says so) never shows "Turn 3". The misheard clip after the turns got the
+    // "Sorry, I didn't get that" clip, whose first sound the entry carries.
+    const stats = [
+      { stopped_at: 6.2, heard_at: 7.46, first_text_at: 8.0, first_sentence_at: 8.3, first_audio_at: 9.04, error: null },
+      { stopped_at: 12.0, heard_at: 12.9, first_text_at: null, first_sentence_at: null, first_audio_at: null, error: 'hearing' },
+      { stopped_at: 20.0, heard_at: 21.0, first_text_at: 21.5, first_sentence_at: 21.6, first_audio_at: 22.0, error: null, babble: true },
+      { stopped_at: 30.0, heard_at: 30.8, first_text_at: null, first_sentence_at: null, first_audio_at: 30.9, error: 'hearing' },
+    ];
+    mount({ extra: (path, opts) => (/^\/v1\/admin\/phone\/calls\/[^/]+$/.test(path) && (opts?.method ?? 'GET') === 'GET'
+      ? json(200, { ...call(), turns: 2, lineId: 'line-1', stats, messages: [
+        { id: 'm1', role: 'assistant', content: 'Hello.', timestamp: 't', status: 'complete', finishReason: 'stop' }] })
+      : undefined) });
+    await editFirst();
+    fireEvent.click(await screen.findByRole('button', { name: 'Transcript' }));
+    const timings = await screen.findByTestId('phone-turn-timings');
+    expect(within(timings).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Turn 1: first sound 2.8 s · heard after 1.3 s',
+      'Not heard',
+      'Turn 2: first sound 2.0 s · heard after 1.0 s',
+      'Not heard: first sound 0.9 s',
+    ]);
   });
 
   it('says a switched-off profile answers as the default, in the list and the editor', async () => {
