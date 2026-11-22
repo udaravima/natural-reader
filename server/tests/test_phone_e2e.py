@@ -126,6 +126,11 @@ async def test_a_real_call_is_greeted_heard_and_answered(pool, tmp_path, monkeyp
         with wave.open(recording, "rb") as w:
             assert w.getframerate() == 8000
             heard = w.readframes(w.getnframes())
+        # Silence goes down the line from connect while the call is checked and opened (final fix F4: Asterisk drops a
+        # call that gets no audio for 2 s), then the greeting. Whole silent frames are stripped from the front of both.
+        lead = silent_lead(heard)
+        assert lead >= 320, "no silence came before the greeting: the keep-alive didn't run"
+        heard, greeting_pcm = heard[lead:], greeting_pcm[silent_lead(greeting_pcm):]
         assert heard[:len(greeting_pcm) - 320] == greeting_pcm[:-320], "the first thing heard is not the greeting"
         found_first, found_sound = FIRST_SOUND.search(printed), SOUND.search(printed)
         assert found_first and found_sound, printed
@@ -181,6 +186,14 @@ async def test_a_real_call_is_greeted_heard_and_answered(pool, tmp_path, monkeyp
         await router.aclose()
         await embeddings.stop_client()
 
+
+
+def silent_lead(pcm: bytes) -> int:
+    """How many bytes of whole 320-byte frames of digital silence `pcm` starts with: what the keep-alive sends."""
+    n = 0
+    while pcm[n:n + 320] == b"\0" * 320:
+        n += 320
+    return n
 
 
 def sound_only(pcm: bytes, threshold: float = 100.0) -> bytes:

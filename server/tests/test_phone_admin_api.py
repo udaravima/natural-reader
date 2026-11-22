@@ -26,7 +26,7 @@ from server.phone import service, store, voice
 from server.phone.clips import DEFAULT_CLIP_TEXTS
 from server.phone.store import LineVoice
 from server.routers import phone_admin
-from server.services import console_settings, model_settings, profile_library
+from server.services import console_settings, inference_budget, model_settings, profile_library
 from server.tests import seed
 from server.tests.chat_harness import FakeRouter
 from server.tests.dbutil import ADMIN_URL, apply_migrations, url_for
@@ -198,6 +198,15 @@ async def test_status_is_the_services(admin_client, listening):
     assert (await admin_client.get("/v1/admin/phone/status")).json() == ON
 
 
+@pytest.mark.parametrize("address", ["0.0.0.0:9092", "[::]:9092", "192.0.2.10", "2001:db8::1:9092",
+                                     "[2001:db8::1:9092"])
+async def test_status_never_shows_an_undialable_address(admin_client, monkeypatch, address):
+    # Final fix F7: the console's header shows status's pbx_address; an address nobody can dial reads as none, so the
+    # header says to set PHONE_PBX_ADDRESS (R12.1) instead of naming a wildcard.
+    monkeypatch.setattr(service, "status", lambda: {**ON, "pbx_address": address})
+    assert (await admin_client.get("/v1/admin/phone/status")).json() == {**ON, "pbx_address": None}
+
+
 # --- creating, and the snippet ---
 
 async def test_create_line_renders_clips_and_shows_snippet(admin_client, db_conn, world, renders, listening):
@@ -209,7 +218,7 @@ async def test_create_line_renders_clips_and_shows_snippet(admin_client, db_conn
         "id": lid, "name": "Front desk", "enabled": False, "profile": None,
         "project": {"id": world["project"], "name": "Product docs"}, "model": "ollama:m1", "voice": KOKORO,
         "language": "en", "greeting": GREETING, "maxCallS": 600, "maxCalls": 2, "dailyTokens": 5000,
-        "callsToday": 0, "lastCallAt": None, "transcripts": 0, "access": True,
+        "callsToday": 0, "lastCallAt": None, "transcripts": 0, "access": True, "closedReason": "off",
         "snippet": "exten => 810,1,Answer()\n"
                    f" same => n,AudioSocket({lid},192.0.2.10:9092)\n"
                    " same => n,Hangup()"}
@@ -247,7 +256,9 @@ async def test_snippet_is_null_when_not_listening(admin_client, line, monkeypatc
 @pytest.mark.parametrize("address", [None, "0.0.0.0:9092", "[::]:9092", "0:9092", "192.0.2.10", "192.0.2.10:0",
                                      "nonsense",
                                      # R11.13: an IPv6 host without brackets has no port that can be told apart
-                                     "2001:db8::1", "2001:db8::1:9092"])
+                                     "2001:db8::1", "2001:db8::1:9092",
+                                     # final fix F15: a bracket that never closes, or anything else after it
+                                     "[2001:db8::1:9092", "[2001:db8::1]x:9092", "[2001:db8::1]]:9092"])
 async def test_snippet_is_null_without_a_dialable_address(admin_client, line, monkeypatch, address):
     # R11.1 / R11.1a: never a copyable snippet with a placeholder or a wildcard in it
     monkeypatch.setattr(service, "status", lambda: {**ON, "pbx_address": address})
@@ -265,10 +276,59 @@ async def test_the_line_shows_its_profile_by_name(admin_client, db_conn, world):
     profile = await profile_library.create_profile(db_conn, name="Phone desk", description="", text="Be brief.",
                                                    updated_by=None)
     r = await admin_client.post("/v1/admin/phone/lines", json=_body(world, profileId=profile.id))
-    assert r.json()["profile"] == {"id": profile.id, "name": "Phone desk"}
+    assert r.json()["profile"] == {"id": profile.id, "name": "Phone desk", "enabled": True}
+    # Final fix F8: a profile switched off in the library is still the line's, but a call answers as the default
+    # profile (profile_text.resolve skips a disabled one). The JSON says so, for the console to say it.
+    other = await profile_library.create_profile(db_conn, name="Day desk", description="", text="Be kind.",
+                                                 updated_by=None)
+    await profile_library.update_profile(db_conn, other.id, is_default=True, updated_by=None)   # the default stays on
+    await profile_library.update_profile(db_conn, profile.id, enabled=False, updated_by=None)
+    lid = r.json()["id"]
+    assert (await admin_client.get(f"/v1/admin/phone/lines/{lid}")).json()["profile"] == {
+        "id": profile.id, "name": "Phone desk", "enabled": False}
+    assert [ln["profile"] for ln in (await admin_client.get("/v1/admin/phone/lines")).json()
+            if ln["id"] == lid] == [{"id": profile.id, "name": "Phone desk", "enabled": False}]
     _refusal(await admin_client.post("/v1/admin/phone/lines",
                                      json=_body(world, profileId="6f1c2a00-0000-4000-8000-00000000000f")),
              422, "unknown_profile")
+
+
+# --- why a line turns callers away (final fix F19) ---
+
+async def test_closed_reason_is_the_gates_own_offline_answer(admin_client, db_conn, world, router):
+    # The list says why a line turns its callers away, by the gate's checks in the gate's order (service.py steps
+    # 2-4): its state, its project, its membership, its budget, the model's offline rules. Never the provider's list.
+    async def never(model_id):
+        raise AssertionError("the line JSON asked the provider")
+    router.is_listed = never
+
+    async def on(**kw):
+        made = await _store_line(db_conn, world, **kw)
+        return await store.update_line(db_conn, world["admin"], made.id, enabled=True)
+    off = await _store_line(db_conn, world)
+    answers = await on()
+    no_project = await on(project_id=world["second"])
+    await db_conn.execute("DELETE FROM projects WHERE id = %s", (world["second"],))
+    no_access = await on()
+    await db_conn.execute("DELETE FROM project_members WHERE user_id = %s", (no_access.service_user_id,))
+    spent = await on(daily_tokens=10)
+    await inference_budget.record_usage(db_conn, spent.service_user_id, 6, 4, model=spent.model_id, kind="chat",
+                                        estimated=False)
+
+    async def reasons():
+        return {ln["id"]: ln["closedReason"] for ln in (await admin_client.get("/v1/admin/phone/lines")).json()}
+    assert await reasons() == {off.id: "off", answers.id: None, no_project.id: "no_project",
+                               no_access.id: "no_access", spent.id: "budget"}
+    assert (await admin_client.get(f"/v1/admin/phone/lines/{spent.id}")).json()["closedReason"] == "budget"
+    # The model withdrawn (the environment's list, here): a line that would answer now reads "model"; the earlier
+    # checks still win for the others, as at the gate.
+    router.allowed = False
+    assert await reasons() == {off.id: "off", answers.id: "model", no_project.id: "no_project",
+                               no_access.id: "no_access", spent.id: "budget"}
+    router.allowed = True
+    await console_settings.save(db_conn, model_settings.SECTION, {"chat_models": ["ollama:other"]},
+                                updated_by=world["admin"].user_id)
+    assert (await reasons())[answers.id] == "model"
 
 
 # --- the model (R11.5, R11.6) ---

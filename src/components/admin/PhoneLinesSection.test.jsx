@@ -17,7 +17,7 @@ const line = (over = {}) => ({
   model: 'ollama:llama3', voice: { engine: 'kokoro', voice: 'af_heart', accent: null }, language: 'en',
   greeting: "Hello, you've reached Front desk. I'm an automated assistant. How can I help?",
   maxCallS: 600, maxCalls: 2, dailyTokens: null, callsToday: 3, lastCallAt: '2026-11-21T14:02:00Z',
-  transcripts: 2, access: true, snippet: SNIPPET, ...over,
+  transcripts: 2, access: true, closedReason: null, snippet: SNIPPET, ...over,
 });
 
 const call = (over = {}) => ({
@@ -537,9 +537,9 @@ describe('PhoneLinesSection', () => {
   });
 
   it('reads Closed, not On, for a line the gate turns away, and lets it be switched off', async () => {
-    mount({ lines: [line({ project: null, access: null })] });
+    mount({ lines: [line({ project: null, access: null, closedReason: 'no_project' })] });
     const card = (await screen.findByText('Front desk')).closest('[data-line]');
-    expect(within(card).getByText('Closed')).toBeTruthy();
+    expect(within(card).getByText('Closed: no project')).toBeTruthy();
     expect(within(card).queryByText('On')).toBeNull();
     await editFirst();
     expect((await screen.findByLabelText('Line is on')).disabled).toBe(false);
@@ -670,9 +670,33 @@ describe('PhoneLinesSection', () => {
   });
 
   it('reads Closed when the line is on but has lost access to its project', async () => {
-    mount({ lines: [line({ access: false })] });
+    mount({ lines: [line({ access: false, closedReason: 'no_access' })] });
     const card = (await screen.findByText('Front desk')).closest('[data-line]');
-    expect(within(card).getByText('Closed')).toBeTruthy();
+    expect(within(card).getByText('Closed: no access')).toBeTruthy();
+  });
+
+  it.each([
+    [{ enabled: false, closedReason: 'off' }, 'Off'],
+    [{ closedReason: 'no_project', project: null, access: null }, 'Closed: no project'],
+    [{ closedReason: 'no_access', access: false }, 'Closed: no access'],
+    [{ closedReason: 'budget' }, 'Closed: token budget used up'],
+    [{ closedReason: 'model' }, 'Closed: model withdrawn'],
+    [{ closedReason: null }, 'On'],
+  ])('the card says why a line turns callers away: %j reads %s', async (over, words) => {
+    mount({ lines: [line(over)] });
+    const card = (await screen.findByText('Front desk')).closest('[data-line]');
+    expect(within(card).getByText(words)).toBeTruthy();
+  });
+
+  it('reads "On · the listener is off" for a line that answers while the listener is off', async () => {
+    mount({ lines: [line({ snippet: null }), line({ id: 'line-2', name: 'Spa', enabled: false, closedReason: 'off' }),
+      line({ id: 'line-3', name: 'Bar', closedReason: 'budget' })],
+    status: { listening: false, pbx_address: null, allow: [], active: 0 } });
+    const card = (name) => screen.getByText(name).closest('[data-line]');
+    await screen.findByText('Front desk');
+    expect(within(card('Front desk')).getByText('On · the listener is off')).toBeTruthy();
+    expect(within(card('Spa')).getByText('Off')).toBeTruthy();
+    expect(within(card('Bar')).getByText('Closed: token budget used up')).toBeTruthy();
   });
 
   it('unticking Line is on and saving sends only enabled false', async () => {
@@ -682,6 +706,124 @@ describe('PhoneLinesSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save line' }));
     await waitFor(() => expect(state.sent).toHaveLength(1));
     expect(state.sent[0].body).toEqual({ enabled: false });
+  });
+
+  // ---- final fix wave ----
+
+  it('says what empty and 0 mean beside Tokens a day, and its hint never calls 0 a cap', async () => {
+    mount();
+    await editFirst();
+    expect(await screen.findByText("Empty: the server's default. 0: no limit.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Tokens a day'), { target: { value: '-5' } });
+    const hint = screen.getByText(/Tokens a day must/).textContent;
+    expect(hint).toContain('0 for no limit');
+    expect(hint).not.toMatch(/0 or more/);
+  });
+
+  it('shows each turn\'s first sound and when it was heard under the transcript, and errors in words', async () => {
+    const stats = [
+      { stopped_at: 6.2, heard_at: 7.46, first_text_at: 8.0, first_sentence_at: 8.3, first_audio_at: 9.04, error: null },
+      { stopped_at: 20.0, heard_at: 21.06, first_text_at: null, first_sentence_at: null, first_audio_at: 22.5, error: 'voice' },
+      { stopped_at: 30.0, heard_at: 31.0, first_text_at: null, first_sentence_at: null, first_audio_at: null, error: 'hearing' },
+      { stopped_at: 40.0, heard_at: 41.0, first_text_at: null, first_sentence_at: null, first_audio_at: 43.0, error: 'empty' },
+      { stopped_at: 50.0, heard_at: 51.0, first_text_at: null, first_sentence_at: null, first_audio_at: null, error: 'begin' },
+    ];
+    mount({ extra: (path, opts) => (/^\/v1\/admin\/phone\/calls\/[^/]+$/.test(path) && (opts?.method ?? 'GET') === 'GET'
+      ? json(200, { ...call(), lineId: 'line-1', stats, messages: [
+        { id: 'm1', role: 'assistant', content: 'Hello.', timestamp: 't', status: 'complete', finishReason: 'stop' }] })
+      : undefined) });
+    await editFirst();
+    fireEvent.click(await screen.findByRole('button', { name: 'Transcript' }));
+    const timings = await screen.findByTestId('phone-turn-timings');
+    expect(within(timings).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Turn 1: first sound 2.8 s · heard after 1.3 s',
+      'Turn 2: first sound 2.5 s · heard after 1.1 s · a sentence was skipped',
+      'Turn 3: not heard',
+      'Turn 4: first sound 3.0 s · heard after 1.0 s · said nothing',
+      'Turn 5: heard after 1.0 s · the answer failed',
+    ]);
+    const text = screen.getByTestId('phone-transcript').textContent;
+    expect(text.indexOf('Hello.')).toBeLessThan(text.indexOf('Turn 1'));
+  });
+
+  it('says a switched-off profile answers as the default, in the list and the editor', async () => {
+    const off = { id: 'pr-3', name: 'Night desk', enabled: false };
+    mount({ lines: [line({ profile: off })], extra: (path) => (path === '/v1/admin/assistant/profiles'
+      ? json(200, { profiles: [{ id: 'pr-1', name: 'The Librarian', enabled: true, isDefault: true },
+        { id: 'pr-3', name: 'Night desk', enabled: false, isDefault: false }] }) : undefined) });
+    const card = (await screen.findByText('Front desk')).closest('[data-line]');
+    expect(within(card).getByText('Night desk (switched off: answers as the default profile) · Product docs')).toBeTruthy();
+    await editFirst();
+    const picker = await screen.findByLabelText('Answers as');
+    await waitFor(() => expect(within(picker).getByRole('option', { name: 'Night desk (switched off: answers as the default profile)' })).toBeTruthy());
+    expect(picker.value).toBe('pr-3');
+  });
+
+  it('says a switched-off profile answers as the default even before the profiles have loaded', async () => {
+    mount({ lines: [line({ profile: { id: 'pr-3', name: 'Night desk', enabled: false } })],
+      extra: (path) => (path === '/v1/admin/assistant/profiles' ? json(500, {}) : undefined) });
+    await editFirst();
+    const picker = await screen.findByLabelText('Answers as');
+    expect(within(picker).getByRole('option', { name: 'Night desk (switched off: answers as the default profile)' })).toBeTruthy();
+  });
+
+  it('clears Opening and frees New line and Edit after an Edit read fails on the network', async () => {
+    mount({ extra: (path, opts) => (/lines\/line-1$/.test(path) && (opts?.method ?? 'GET') === 'GET'
+      ? Promise.reject(new TypeError('Failed to fetch')) : undefined) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Front desk' }));
+    await screen.findByRole('alert');
+    expect(screen.queryByText('Opening…')).toBeNull();
+    expect(screen.getByRole('button', { name: 'New line' }).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Edit Front desk' }).disabled).toBe(false);
+  });
+
+  it('shows 100 seconds as 1.67 minutes, a valid value for the field, and saves it untouched', async () => {
+    const { state } = mount({ lines: [line({ maxCallS: 100 })] });
+    await editFirst();
+    const field = await screen.findByLabelText('Longest call (minutes)');
+    expect(field.value).toBe('1.67');
+    expect(field.getAttribute('step')).toBe('any');      // 1.5 or 1.67 is not a step mismatch
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Reception' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save line' }));
+    await waitFor(() => expect(state.sent).toHaveLength(1));
+    expect(state.sent[0].body).toEqual({ name: 'Reception' });
+  });
+
+  it('loads Knows even when the engine names never answer', async () => {
+    mount({ extra: (path) => (path === '/v1/admin/chat-voice' ? new Promise(() => {}) : undefined) });
+    fireEvent.click(await screen.findByRole('button', { name: 'New line' }));
+    const knows = await screen.findByLabelText('Knows');
+    await waitFor(() => expect(within(knows).getByRole('option', { name: 'Handbook' })).toBeTruthy());
+    expect(within(screen.getByLabelText('Answers as')).getByRole('option', { name: 'Concierge' })).toBeTruthy();
+  });
+
+  it('loads Knows even when the voices fail', async () => {
+    mount({ extra: (path) => (path === '/v1/admin/phone/voices' ? Promise.reject(new TypeError('Failed to fetch')) : undefined) });
+    fireEvent.click(await screen.findByRole('button', { name: 'New line' }));
+    const knows = await screen.findByLabelText('Knows');
+    await waitFor(() => expect(within(knows).getByRole('option', { name: 'Handbook' })).toBeTruthy());
+  });
+
+  it('names a saved project this admin does not maintain as such under Knows', async () => {
+    const { state } = mount({ lines: [line({ project: { id: 'p-3', name: 'Not mine to give' } })] });
+    await editFirst();
+    const knows = await screen.findByLabelText('Knows');
+    await waitFor(() => expect(within(knows).getByRole('option', { name: "Not mine to give (you don't maintain it)" })).toBeTruthy());
+    expect(knows.value).toBe('p-3');
+    expect(within(knows).queryByRole('option', { name: /not offered now/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Reception' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save line' }));
+    await waitFor(() => expect(state.sent).toHaveLength(1));
+    expect(state.sent[0].body).toEqual({ name: 'Reception' });   // the project stays as it is
+  });
+
+  it('shows the card\'s last call and the calls list in the deployment\'s zone', async () => {
+    mount({ props: { zone: 'Asia/Colombo' } });       // UTC+05:30: 14:02 UTC is 19:32 there
+    const card = (await screen.findByText('Front desk')).closest('[data-line]');
+    expect(within(card).getByText(/last 2026-11-21 19:32/)).toBeTruthy();
+    await editFirst();
+    const row = (await screen.findByText('caller hung up')).closest('[data-call]');
+    expect(within(row).getByText('2026-11-21 19:32')).toBeTruthy();
   });
 
   it('reads the calls again after a save', async () => {

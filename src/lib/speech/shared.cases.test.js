@@ -5,7 +5,9 @@ import { createSentenceSplitter } from './sentences';
 import { heardSpeech, isEcho } from './checks';
 
 // The same files are read by server/tests/test_phone_text.py: a phone call runs Talk's text rules in Python, and
-// these cases keep the two from drifting. Plain text only, because the server's markdown handling is simpler.
+// these cases keep the two from drifting. The cases include Markdown: the splitter runs each piece through
+// markdownToSpeech, and the server's plain() is markdownToSpeech rule for rule (R4.2), so the two change together,
+// with a case here for every rule.
 
 describe('shared sentence cases', () => {
   it.each(sentenceCases)('$name', ({ input, expect: want }) => {

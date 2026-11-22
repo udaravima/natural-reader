@@ -19,6 +19,7 @@ import io
 import ipaddress
 import logging
 import os
+import re
 import wave
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
@@ -37,7 +38,7 @@ from ..llm.router import get_router
 from ..phone import clips, service as phone_service, store, voice
 from ..phone.config import split_listen
 from ..phone.store import Clip, Line, LineVoice
-from ..services import model_settings, profile_library
+from ..services import inference_budget, model_router, model_settings, profile_library
 from ..services.deployment_settings import deployment_zone
 
 logger = logging.getLogger(__name__)
@@ -213,15 +214,24 @@ async def voices(_: deps.Principal = Depends(deps.require_admin)):
 
 @router.get("/status")
 async def status(_: deps.Principal = Depends(deps.require_admin)):
-    """Listener on or off, the address the PBX dials, the allow list, and this process's calls now."""
-    return phone_service.status()
+    """Listener on or off, the address the PBX dials, the allow list, and this process's calls now. The address is
+    the one the snippet would carry (`_dialable`): one nobody can dial reads as none, so the console's header says
+    to set PHONE_PBX_ADDRESS instead of naming a wildcard (R12.1)."""
+    listener = phone_service.status()
+    return {**listener, "pbx_address": _dialable(listener.get("pbx_address"))}
+
+
+_BRACKETED = re.compile(r"^\[[^\]]+\]:\d+$")
 
 
 def _dialable(address: str | None) -> str | None:
     """R11.1a: PHONE_PBX_ADDRESS isn't checked at load, so an address with no port (or port 0), or with an
     unspecified host (0.0.0.0, ::, or the `0` shorthand), is no address: nobody can dial it. Nor is an IPv6 host
     without its brackets (R11.13): in `2001:db8::1` no port can be told apart, and split_listen would read `:1` as
-    one."""
+    one. A bracketed host must be exactly `[host]:port` (final fix F15): split_listen strips one bracket from each
+    end, so `[2001:db8::1:9092` would otherwise read as host 2001:db8::1, port 9092."""
+    if address and address.strip().startswith("[") and not _BRACKETED.match(address.strip()):
+        return None
     parts = split_listen(address) if address else None
     if parts is None or parts[1] == 0:
         return None
@@ -249,16 +259,39 @@ def _snippet(line_id: str, listener: dict) -> str | None:
 
 # ---------- a line as the console sees it ----------
 
+async def _closed_reason(conn, ln: Line, has_access: bool, models: model_settings.ModelsSettings, router,
+                         deployment_budget: int | None) -> str | None:
+    """Why the gate turns this line's callers away, or None when it answers (final fix F19): the gate's own offline
+    checks in its own order (service.py steps 2 to 4), so the list and a call agree. `off`, `no_project`,
+    `no_access`, `budget` or `model`. The provider's own model list is never asked here (it needs the network): a
+    model the provider dropped shows only at the next call. `router` None: it hasn't started, so the model isn't
+    judged."""
+    if not ln.enabled:
+        return "off"
+    if ln.project_id is None:
+        return "no_project"
+    if not has_access:
+        return "no_access"
+    if await inference_budget.over_budget(conn, ln.service_user_id, deployment_budget):
+        return "budget"
+    if router is not None and not model_settings.model_offered(models, ln.model_id, router):
+        return "model"
+    return None
+
+
 async def _views(conn, lines: list[Line]) -> list[dict]:
-    """The line JSON for each line, from five reads whatever their number."""
+    """The line JSON for each line, from six reads whatever their number, plus the budget reads of the lines that are
+    on and can reach their project."""
     if not lines:
         return []
     ids = [ln.id for ln in lines]
     profile_ids = [ln.profile_id for ln in lines if ln.profile_id]
     project_ids = [ln.project_id for ln in lines if ln.project_id]
-    cur = await conn.execute("SELECT id::text, name FROM assistant_profiles WHERE id = ANY(%s::uuid[])",
+    # A profile switched off in the library stays the line's, but a call answers as the default profile
+    # (profile_text.resolve skips a disabled one): `enabled` lets the console say so.
+    cur = await conn.execute("SELECT id::text, name, enabled FROM assistant_profiles WHERE id = ANY(%s::uuid[])",
                              (profile_ids,))
-    profiles = dict(await cur.fetchall())
+    profiles = {pid: {"id": pid, "name": name, "enabled": enabled} for pid, name, enabled in await cur.fetchall()}
     cur = await conn.execute("SELECT id::text, name FROM projects WHERE id = ANY(%s::uuid[])", (project_ids,))
     projects = dict(await cur.fetchall())
     # "today" is the deployment's, as a call's title is; a refused call counts, since someone called
@@ -274,12 +307,19 @@ async def _views(conn, lines: list[Line]) -> list[dict]:
         "ON m.project_id = l.project_id AND m.user_id = l.service_user_id WHERE l.id = ANY(%s::uuid[])", (ids,))
     access = {row[0] for row in await cur.fetchall()}
     listener = phone_service.status()
+    models = await model_settings.settings_or_env(conn)
+    deployment_budget = model_router.get_config().daily_token_budget   # as the gate and post_turn pass it
+    try:
+        llm = get_router()
+    except RuntimeError:
+        llm = None
     out = []
     for ln in lines:
         today, last, transcripts = calls.get(ln.id, (0, None, 0))
         out.append({
             "id": ln.id, "name": ln.name, "enabled": ln.enabled,
-            "profile": {"id": ln.profile_id, "name": profiles.get(ln.profile_id)} if ln.profile_id else None,
+            "profile": profiles.get(ln.profile_id, {"id": ln.profile_id, "name": None, "enabled": None})
+            if ln.profile_id else None,
             "project": {"id": ln.project_id, "name": projects.get(ln.project_id)} if ln.project_id else None,
             "model": ln.model_id,
             "voice": {"engine": ln.voice.engine, "voice": ln.voice.voice, "accent": ln.voice.accent},
@@ -287,6 +327,7 @@ async def _views(conn, lines: list[Line]) -> list[dict]:
             "dailyTokens": ln.daily_tokens, "callsToday": today, "lastCallAt": last,
             "transcripts": transcripts,                                    # what deleting the line takes with it
             "access": (ln.id in access) if ln.project_id else None,        # None: no project to have access to
+            "closedReason": await _closed_reason(conn, ln, ln.id in access, models, llm, deployment_budget),
             "snippet": _snippet(ln.id, listener),
         })
     return out

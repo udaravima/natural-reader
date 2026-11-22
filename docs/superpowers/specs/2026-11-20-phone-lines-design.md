@@ -226,11 +226,18 @@ The figure to compare with Talk and the bench is "first sound after the caller s
 
 `SPOKEN_RULE` already asks for short, plain speech. A phone turn also gets `PHONE_RULE`:
 
-> "This is a phone call. The caller can't see anything: name a document when it helps, but don't read out page numbers, links or file names unless asked. If the documents don't have the answer, say so. If you didn't catch something, ask the caller to repeat it."
+> "This is a phone call: the caller only hears you. Don't cite sources the way the steps above show: say no page numbers, document numbers, file names or file extensions (such as .md or .pdf), links, ids or symbols, and put nothing in brackets. If it helps to say where an answer comes from, describe the document in a few plain words, such as "the opening hours notice". Look things up yourself; never ask the caller whether you should. If the documents don't have the answer, say so. If you didn't catch something, ask the caller to repeat it."
+
+The steps themselves stop teaching citations on a phone turn (final fix F2: the walk heard "Kettle facts, MD, page one", because step 4's own example said "(Guide.md, page 7)" and a later rule can't reliably undo an example):
+- step 4 reads "4. Answer in plain spoken sentences, without page numbers or document names in brackets. When the documents don't cover part of the question, say so plainly; you may add what you know in general, introduced as not from the documents.";
+- after a profile, the opener is "Whatever your role, an answer from the documents follows the steps below.", without "and cites its pages";
+- the pin sentence ("Cite text the user pinned by its page") comes only with pins, which a call's new chat never has.
+
+The chat's and Talk's rules are unchanged, byte for byte (`test_chat_prompt.py` pins a digest over every combination).
 
 Implementation:
 - A new `channel` field on `TurnRequest` and `TurnInput` (`"chat"` by default, `"phone"` for lines).
-- `system_rules(..., phone=True)` appends the rule.
+- `system_rules(..., phone=True)` appends the rule, and passes `phone` to the steps.
 - Web search is off for phone turns: `web_mode = "off"`, the same switch spoken turns already use for "ask".
 
 ### 5.5 Data (migration 033)

@@ -769,27 +769,29 @@ will know: the **Knows** list shows only those. Phase 1 speaks English only, and
 app doesn't change your phone system: you paste three lines into it yourself.
 
 **The list.** Above it a line reads "Listening for your phone system at … · N calls now".
-Each line shows its name, **On** or **Off** (or **Closed**, in amber: it is switched on
-but its project is gone or the line lost access to it; a spent token budget or a
-withdrawn model still read **On**, and show only in the call list or the log:
-[why](PHONE_LINES.md#troubleshooting)), who
-answers and which project, and how many calls it has had today. **Edit** opens it.
-**New line** makes one.
+Each line shows its name and what a caller would get now: **On**, **Off**, or, in amber,
+why a line that is switched on turns callers away: **Closed: no project**, **Closed: no
+access**, **Closed: token budget used up** or **Closed: model withdrawn**. While the
+server's listener is off, a line that would answer reads **On · the listener is off**. (One
+cause the list can't see is a model its provider no longer has: that line reads **On** and
+callers hear "closed"; [why](PHONE_LINES.md#troubleshooting).) Below that: who answers and
+which project, and how many calls it has had today. **Edit** opens it. **New line** makes
+one.
 
 **Making or editing a line.**
 
 | Control | What it does |
 |---|---|
 | **Name** | What you call the line (up to 60 characters). |
-| **Answers as** | The assistant profile that sets its manner; **Default profile** if none. |
-| **Knows** | The project callers hear answers from. **No project yet** until you pick one. Picking one shows "Anyone who calls this line hears answers drawn from this project." and the line needs a project before it can be switched on. |
+| **Answers as** | The assistant profile that sets its manner; **Default profile** if none. A profile switched off in the profile library stays the line's but reads "<name> (switched off: answers as the default profile)", here and in the list, because that is what callers then get. |
+| **Knows** | The project callers hear answers from. **No project yet** until you pick one. Picking one shows "Anyone who calls this line hears answers drawn from this project." and the line needs a project before it can be switched on. A line on a project you don't maintain or own (another admin's) shows it as "<project> (you don't maintain it)"; you can still edit the rest of the line. |
 | **Model** | The chat model that writes the answers. |
 | **Voice** | The voice engine, the voice and (for Google's voices) the English accent. |
 | **Welcome message** | The first thing a caller hears. Keep it saying that the caller is talking to an automated assistant. |
 | **Hear the welcome** | Plays the saved welcome as callers hear it. Save first to hear a change. |
 | **Longest call (minutes)** | 1 to 60 (a fraction such as 1.5 is fine). The call ends at the limit. Default 10. |
 | **Calls at once** | 1 to 20 callers on this line together; the next hears "busy". Default 2. |
-| **Tokens a day** | The most model tokens the line may spend a day; empty ("default") follows the server's daily budget. A spent budget closes the line until the next day. |
+| **Tokens a day** | The most model tokens the line may spend a day. As the hint beside it says, "Empty: the server's default. 0: no limit." (the server's default is its daily budget, or none). A spent budget closes the line until the next day. |
 | **Line is on** | Switches the line on. It starts off, and can't be on without a project. |
 | **Save line** | Saves, and renders the line's recorded phrases in its voice (this takes a few seconds). |
 | **Cancel** / **Back to the lines** | Leaves the editor. With unsaved changes you are asked first. |
@@ -808,7 +810,10 @@ system could dial, this area says what to set instead of showing lines that woul
 **Calls.** Under the lines, **Calls** lists the line's calls, newest first: the time,
 how long, why it ended (caller hung up, reached the time limit, no one spoke, token budget
 used up, line was busy or closed, something went wrong, app was restarted), the number of
-turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line");
+turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line"),
+with one line per turn under it: "Turn n: first sound X.X s · heard after Y.Y s", both counted
+in seconds from when the caller stopped speaking, plus what went wrong, if anything (not heard,
+a sentence was skipped, said nothing, the answer failed);
 **Delete call** removes the call and its transcript after you confirm; **Refresh** reloads
 the list. Calls turned away as busy or closed are listed too, with no transcript. No audio
 is kept, and no caller's number.

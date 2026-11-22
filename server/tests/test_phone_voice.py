@@ -1,10 +1,12 @@
 """A line's voice at 8 kHz and its pre-rendered clips (spec 5.1, 5.3). No request reaches Google or Kokoro."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -17,6 +19,7 @@ from server.phone import clips as clips_mod
 from server.phone import store, voice
 from server.phone.clips import DEFAULT_CLIP_TEXTS, ClipCache, render_clips
 from server.phone.store import Clip, Line, LineVoice
+from server.schemas import BatchTTSRequest, TTSRequest
 
 CREDS = {"GOOGLE_APPLICATION_CREDENTIALS": "/run/secrets/google.json"}
 
@@ -95,10 +98,95 @@ async def test_a_voice_failure_surfaces_as_the_engines_error(monkeypatch):
         await voice.render("Hi.", LineVoice("chirp", "Kore", None))
 
 
-async def test_kokoro_pcm_takes_the_lock_and_runs_speak(monkeypatch):
-    monkeypatch.setattr(endpoints, "_speak", lambda t, v, s: (np.ones(3, dtype=np.float32), 24000))
-    audio, rate = await endpoints.kokoro_pcm("Hi.", "af_heart", 1.0)
-    assert rate == 24000 and len(audio) == 3 and not endpoints.inference_lock.locked()
+class _BlockingSpeak:
+    """A `_speak` that holds its executor thread until `release` is set. It counts how many run at once, and
+    whether the Kokoro lock was held each time one started."""
+
+    def __init__(self):
+        self.release = threading.Event()
+        self._mu = threading.Lock()
+        self.inside = self.peak = self.entries = self.unlocked = 0
+
+    def __call__(self, text, voice_name, speed):
+        with self._mu:
+            self.inside += 1
+            self.entries += 1
+            self.peak = max(self.peak, self.inside)
+            self.unlocked += not endpoints.inference_lock.locked()
+        try:
+            self.release.wait(5)
+        finally:
+            with self._mu:
+                self.inside -= 1
+        return np.ones(3, dtype=np.float32), 24000
+
+
+class _StayingClient:
+    """A Request whose client never leaves."""
+
+    async def is_disconnected(self):
+        return False
+
+
+_A_PRINCIPAL = object()
+_KOKORO_ROUTES = {
+    "kokoro_pcm": lambda: endpoints.kokoro_pcm("A.", "af_heart", 1.0),
+    "synthesize": lambda: endpoints.synthesize(TTSRequest(text="A."), _StayingClient(), _A_PRINCIPAL),
+    "batch_synthesize": lambda: endpoints.batch_synthesize(
+        BatchTTSRequest(sentences=["A.", "B."]), _StayingClient(), _A_PRINCIPAL),
+}
+
+
+async def _until(check, timeout=2.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not check():
+        assert asyncio.get_running_loop().time() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize("route", list(_KOKORO_ROUTES))
+async def test_a_cancelled_render_keeps_the_kokoro_lock_until_its_thread_ends(monkeypatch, route):
+    """A barge-in cancels the turn's voice task, but the thread already in Kokoro can't be stopped. The lock must
+    stay held until that thread ends, or the next render runs Kokoro beside it (Kokoro isn't thread-safe)."""
+    monkeypatch.setattr(endpoints, "inference_lock", asyncio.Lock())
+    speak = _BlockingSpeak()
+    monkeypatch.setattr(endpoints, "_speak", speak)
+    first = asyncio.create_task(_KOKORO_ROUTES[route]())
+    try:
+        await _until(lambda: speak.entries == 1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(endpoints.kokoro_pcm("B.", "af_heart", 1.0))
+        await asyncio.sleep(0.2)
+        assert speak.entries == 1, "a second render entered Kokoro while the cancelled one's thread still ran"
+        assert endpoints.inference_lock.locked()
+    finally:
+        speak.release.set()
+    audio, rate = await asyncio.wait_for(second, 5)
+    assert rate == 24000 and len(audio) == 3
+    assert speak.entries == 2 and speak.peak == 1 and speak.unlocked == 0
+    assert not endpoints.inference_lock.locked()
+
+
+async def test_a_render_cancelled_while_waiting_for_kokoro_holds_nothing(monkeypatch):
+    monkeypatch.setattr(endpoints, "inference_lock", asyncio.Lock())
+    speak = _BlockingSpeak()
+    monkeypatch.setattr(endpoints, "_speak", speak)
+    first = asyncio.create_task(endpoints.kokoro_pcm("A.", "af_heart", 1.0))
+    try:
+        await _until(lambda: speak.entries == 1)
+        waiting = asyncio.create_task(endpoints.kokoro_pcm("B.", "af_heart", 1.0))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        speak.release.set()
+    await asyncio.wait_for(first, 5)
+    assert speak.entries == 1 and not endpoints.inference_lock.locked()
+    await asyncio.wait_for(endpoints.kokoro_pcm("C.", "af_heart", 1.0), 5)
+    assert speak.entries == 2 and not endpoints.inference_lock.locked()
 
 
 def test_default_texts_are_the_rulings():

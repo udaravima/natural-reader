@@ -73,3 +73,21 @@ async def test_delete_user_still_deletes_a_person(db_conn):
     person_id = await _person(db_conn)
     await users.delete_user(db_conn, person_id)
     assert await users.get_user(db_conn, person_id) is None
+
+
+@pytest.mark.parametrize("role", ["contributor", "maintainer", "owner"])
+async def test_a_line_user_can_only_ever_be_a_reader(db_conn, role):
+    # Final fix F10: put_member(line=True) is the one way a line joins a project. Anything above reader would let
+    # anonymous callers change the project (or, as owner, hold it).
+    from server.auth.authz import project_role
+    from server.services.project_members import put_member
+    from server.tests import seed
+    from server.tests.test_project_members import _p, _user
+    owner = await _user(db_conn, "line-owner")
+    project = await seed.make_project(db_conn, owner)
+    line_id = await _line_user(db_conn)
+    with pytest.raises(ValueError):
+        await put_member(db_conn, _p(owner), project, line_id, role, show_email=False, line=True)
+    assert await project_role(db_conn, line_id, project) is None
+    await put_member(db_conn, _p(owner), project, line_id, "reader", show_email=False, line=True)
+    assert await project_role(db_conn, line_id, project) == "reader"

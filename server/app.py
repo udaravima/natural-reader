@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .appconfig import cors_allow_credentials, parse_cors_origins
 from .auth.config import load_auth_config, startup_guard, warn_published_secrets
-from .db import close_db, get_pool, init_db, init_db_until_ready
+from .db import close_db, get_pool, init_db, init_db_until_ready, is_ready as db_is_ready
 from .http_errors import install_handlers
 from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
         )
         warn_published_secrets(_auth_cfg)
         docling_convert.check_available()
+        router_up = False   # set once start_llm_router() has run; _db_ready reads it when it runs
         async def _db_ready() -> None:
             """The start-up steps that need the database. They run at start, or later, when a database that
             wasn't reachable at start comes up."""
@@ -162,9 +163,11 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.warning("Voice input warm-up skipped", exc_info=True)
             # The phone lines' AudioSocket listener (off unless PHONE_AUDIOSOCKET_LISTEN is set). Every call needs the
-            # database, so it listens only once that is up. A call reaches the model router only at its first turn,
-            # after the greeting, so the router starting just after this is in time. Never raises.
-            await phone_service.start()
+            # database, and its gate asks the model router at connect (R10.10), so it listens only once both are up:
+            # here on the late-database path (the router started long ago), after start_llm_router() below on a
+            # normal boot. start() is idempotent, so the two can't open two listeners. Never raises.
+            if router_up:
+                await phone_service.start()
 
         # One attempt, which never raises: the app comes up even when Postgres is down (within one connect
         # timeout), and keeps trying in the background, so a Postgres that boots after the app is picked up
@@ -177,6 +180,11 @@ def create_app() -> FastAPI:
         await start_embeddings()
         await start_web_search()
         await start_llm_router()
+        router_up = True
+        # A normal boot's phone listener, now that the database and the router are both up (see _db_ready). A call
+        # that arrived before the router would have been turned away as "can't be checked".
+        if db_is_ready():
+            await phone_service.start()
         # Make sure the document storage directory exists before the first
         # upload hits — stage_upload's mkdir is a fallback, not the owner.
         storage = doc_storage.storage_dir()

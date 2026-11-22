@@ -8,6 +8,7 @@ Bug fixes applied:
 - Proper HTTPException re-raising so 400s don't become 500s
 """
 import asyncio
+import contextlib
 import logging
 import base64
 import io
@@ -39,11 +40,38 @@ def _speak(text: str, voice: str, speed: float):
     return kokoro.create(phonemes(kokoro.tokenizer, text, voice), voice=voice, speed=speed, is_phonemes=True)
 
 
+@contextlib.asynccontextmanager
+async def _holding_kokoro():
+    """Hold `inference_lock`, and yield `run(fn, *args)`, which runs a blocking Kokoro job in the executor under it.
+
+    A thread can't be stopped. A plain `async with inference_lock: await run_in_executor(...)` releases the lock
+    when its await is cancelled (a phone barge-in, a request that goes away) while the thread is still inside
+    Kokoro, so the next waiter's job ran beside it. Here the job is shielded, and if the holder leaves while a job
+    runs, the lock is released by that job's done-callback, when the thread really ends. A cancellation while
+    waiting for the lock holds nothing."""
+    lock = inference_lock
+    await lock.acquire()
+    job = None
+
+    async def run(fn, *args):
+        nonlocal job
+        job = asyncio.get_running_loop().run_in_executor(None, fn, *args)
+        return await asyncio.shield(job)
+
+    try:
+        yield run
+    finally:
+        if job is None or job.done():
+            lock.release()
+        else:
+            job.add_done_callback(lambda f: (f.cancelled() or f.exception(), lock.release()))
+
+
 async def kokoro_pcm(text: str, voice: str, speed: float):
-    """(audio, sample rate) from Kokoro for a caller outside the HTTP routes (the phone lines). It takes the same
+    """(audio, sample rate) from Kokoro for a caller outside the HTTP routes (the phone lines). It holds the same
     lock as `synthesize`, because Kokoro isn't thread-safe, and runs the blocking `_speak` in the executor."""
-    async with inference_lock:
-        return await asyncio.get_event_loop().run_in_executor(None, lambda: _speak(text, voice, speed))
+    async with _holding_kokoro() as run:
+        return await run(_speak, text, voice, speed)
 
 
 async def _client_gone(http_request: Request) -> bool:
@@ -73,15 +101,11 @@ async def synthesize(request: TTSRequest, http_request: Request,
     # print(f"[TTS] Synthesize request: voice={request.voice}, speed={request.speed}")
     # print(f"[TTS] Text: \"{request.text[:200]}{'...' if len(request.text) > 200 else ''}\"")
     try:
-        async with inference_lock:
+        async with _holding_kokoro() as run:
             if await _client_gone(http_request):
                 logger.info("tts: client left before synthesis; skipped")
                 raise HTTPException(status_code=CLIENT_GONE, detail="Client closed the request")
-            loop = asyncio.get_event_loop()
-            audio, sample_rate = await loop.run_in_executor(
-                None,
-                lambda: _speak(request.text, request.voice, request.speed)
-            )
+            audio, sample_rate = await run(_speak, request.text, request.voice, request.speed)
 
         if len(audio) == 0:
             raise HTTPException(status_code=400, detail="No audio generated")
@@ -123,9 +147,8 @@ async def batch_synthesize(
 
         all_audio = []
         sample_rate = None
-        loop = asyncio.get_event_loop()
 
-        async with inference_lock:
+        async with _holding_kokoro() as run:
             for i, sentence in enumerate(request.sentences):
                 if await _client_gone(http_request):
                     logger.info("tts: client left after %d of %d sentences; stopped", i, len(request.sentences))
@@ -133,10 +156,7 @@ async def batch_synthesize(
                 if not sentence.strip():
                     continue
 
-                audio, sr = await loop.run_in_executor(
-                    None,
-                    lambda s=sentence: _speak(s, request.voice, request.speed)
-                )
+                audio, sr = await run(_speak, sentence, request.voice, request.speed)
 
                 if sample_rate is None:
                     sample_rate = sr

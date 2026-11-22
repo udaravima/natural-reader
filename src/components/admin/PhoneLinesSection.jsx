@@ -21,6 +21,7 @@ const WARNING = 'Anyone who calls this line hears answers drawn from this projec
 const LISTENER_OFF = 'The phone listener is off. Set PHONE_AUDIOSOCKET_LISTEN and PHONE_AUDIOSOCKET_ALLOW, then restart.';
 const NO_PBX_ADDRESS = 'Set PHONE_PBX_ADDRESS to the address your phone system dials, then restart.';
 const SNIPPET_HINT = "Pick any free extension. The id is this line's.";
+const TOKENS_HINT = "Empty: the server's default. 0: no limit.";
 const welcomeFor = (name) => `Hello, you've reached ${name.trim() || 'this line'}. I'm an automated assistant. How can I help?`;
 
 // Why a call ended (phone_calls.end_reason); null means it hasn't.
@@ -38,13 +39,38 @@ function problemOf(f) {
     return 'Longest call must be 1 to 60 minutes (a fraction such as 1.5 is fine).';
   }
   if (!whole(f.maxCalls) || Number(f.maxCalls) < 1 || Number(f.maxCalls) > 20) return 'Calls at once must be a whole number, 1 to 20.';
+  // 0 is no limit, not a cap of nothing (inference_budget treats 0 and None alike).
   if (f.dailyTokens.trim() !== '' && (!whole(f.dailyTokens) || Number(f.dailyTokens) < 0 || !Number.isSafeInteger(Number(f.dailyTokens)))) {
-    return 'Tokens a day must be a whole number, 0 or more, or empty for the default.';
+    return "Tokens a day must be a whole number (0 for no limit), or empty for the server's default.";
   }
   return null;
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** A line's profile as the console names it. One switched off in the library is kept by the line, but a call
+ * answers as the default profile (the chat skips a disabled one), so the name says so. */
+const profileLabel = (p) => (p.enabled === false ? `${p.name} (switched off: answers as the default profile)` : p.name);
+
+// A turn's error (server/phone/call.py: the stats entry's `error`), in words; any other code is a failed answer.
+const TURN_ERRORS = { hearing: 'not heard', voice: 'a sentence was skipped', empty: 'said nothing' };
+
+/**
+ * One line per stats entry: "Turn n: first sound X.X s · heard after Y.Y s", then its error in words. The entry's
+ * times are seconds since the call started; first sound is first_audio_at - stopped_at (Talk's firstSound), heard
+ * after is heard_at - stopped_at (the recognizer's answer). A clip that wasn't heard has no "heard after".
+ */
+function turnLine(s, n) {
+  const since = (at) => (typeof at === 'number' && typeof s.stopped_at === 'number' ? (at - s.stopped_at).toFixed(1) : null);
+  const firstSound = since(s.first_audio_at);
+  const heard = s.error === 'hearing' ? null : since(s.heard_at);
+  const parts = [
+    firstSound !== null && `first sound ${firstSound} s`,
+    heard !== null && `heard after ${heard} s`,
+    s.error && (TURN_ERRORS[s.error] ?? 'the answer failed'),
+  ].filter(Boolean);
+  return `Turn ${n}: ${parts.join(' · ')}`;
+}
 
 function lengthText(seconds) {
   if (seconds == null) return 'in progress';
@@ -57,7 +83,10 @@ function formOf(line) {
   return {
     name: line.name, profileId: line.profile?.id ?? '', projectId: line.project?.id ?? '', model: line.model,
     engine: line.voice.engine, voice: line.voice.voice, accent: line.voice.accent ?? '',
-    greeting: line.greeting, greetingTouched: true, maxCallMin: String(line.maxCallS / 60), maxCalls: String(line.maxCalls),
+    // Minutes to 2 decimals (100 s shows 1.67). Any whole second from 60 to 3600 survives the round trip: 2 decimals
+    // of a minute is within 0.3 s, so Math.round(minutes * 60) gives the saved seconds back and a save stays clean.
+    greeting: line.greeting, greetingTouched: true, maxCallMin: String(Math.round((line.maxCallS / 60) * 100) / 100),
+    maxCalls: String(line.maxCalls),
     dailyTokens: line.dailyTokens == null ? '' : String(line.dailyTokens), enabled: line.enabled,
   };
 }
@@ -121,32 +150,36 @@ export function PhoneLinesSection({ theme, apiHost, apiPort, showToast, onDirtyC
 
   useEffect(() => { load(); }, [load]);
 
-  // The pickers' choices: read once. A failure leaves a picker short, never the section blank.
+  // The pickers' choices: read once, all four at the same time, each on its own. A failed or hung read leaves its
+  // own picker short (a slow engine-name list never holds Knows back), never the section blank.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
+    const reads = [
+      async () => {
         const v = await api.voices();
         if (!cancelled && Array.isArray(v?.engines)) setVoices(v.engines);
-      } catch { /* the voice picker stays empty */ }
-      try {
+      },
+      async () => {
         // The chat voice's engine list names every engine, set up or not: it names a saved engine /voices left out.
         const res = await apiFetch(apiHost, apiPort, '/v1/admin/chat-voice');
         const body = res.ok ? await res.json() : null;
         if (!cancelled && Array.isArray(body?.engines)) setEngineNames(Object.fromEntries(body.engines.map((e) => [e.id, e.label])));
-      } catch { /* the raw id is shown instead */ }
-      try {
+      },
+      async () => {
         const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant/profiles');
         if (res.ok && !cancelled) setProfiles((await res.json()).profiles ?? []);
-      } catch { /* the default profile is still offered */ }
-      try {
+      },
+      async () => {
         const mine = await projectsApi(apiHost, apiPort).list();
         if (!cancelled) {
           setProjects(mine.filter((p) => p.my_role === 'maintainer' || p.my_role === 'owner'));
           setProjectsLoaded(true);
         }
-      } catch { /* no project can be picked */ }
-    })();
+      },
+    ];
+    // A failure is that picker's alone: the voices stay empty, the raw engine id shows, the default profile is
+    // still offered, or no project can be picked (and projectsLoaded stays false).
+    Promise.allSettled(reads.map((read) => read()));
     return () => { cancelled = true; };
   }, [api, apiHost, apiPort]);
 
@@ -172,20 +205,23 @@ export function PhoneLinesSection({ theme, apiHost, apiPort, showToast, onDirtyC
       try {
         line = await api.getLine(listed.id);
       } catch (e) {
-        if (opening_.current !== listed.id) return;
+        if (opening_.current !== listed.id) { setOpening(false); return; }
         opening_.current = null;
         setOpening(false);
         if (e.status === 404) { setError(e); load(); return; }
         setError(e);   // the network: the list's copy would be stale, so open nothing
         return;
       }
-      if (opening_.current !== listed.id) return;   // another editor was opened meanwhile
+      // Another editor was opened meanwhile. Today Edit and New line are disabled while a line is read, so this
+      // can't happen from the screen; "Opening…" is still never left behind if it does.
+      if (opening_.current !== listed.id) { setOpening(false); return; }
       opening_.current = null;
       setOpening(false);
       adopt(line);
       setDraft(formOf(line));
     } else {
       opening_.current = 'new';
+      setOpening(false);   // a new editor supersedes any read still running: its answer will be dropped
       const engine = voices[0];
       setDraft({
         name: '', profileId: '', projectId: '', model: firstLocal(models), engine: engine?.engine ?? 'kokoro',
@@ -323,8 +359,20 @@ export function PhoneLinesSection({ theme, apiHost, apiPort, showToast, onDirtyC
   );
 }
 
-/** The gate turns callers away from a line that is on but has lost its project or its access to it. */
-const closedByGate = (l) => l.enabled && (!l.project || l.access === false);
+// Why the gate turns a line's callers away (the line JSON's closedReason: the gate's own offline checks, in order).
+const CLOSED_WORDS = {
+  no_project: 'Closed: no project', no_access: 'Closed: no access', budget: 'Closed: token budget used up',
+  model: 'Closed: model withdrawn',
+};
+
+/** What a line's card says about it, and its colour: what a caller would get now. */
+function lineState(l, status, theme) {
+  if (!l.enabled || l.closedReason === 'off') return { text: 'Off', tone: theme.textMuted };
+  if (l.closedReason) return { text: CLOSED_WORDS[l.closedReason] ?? 'Closed', tone: 'text-amber-500' };
+  // It would answer, but no call can arrive until the listener is set up and the server restarted.
+  if (status?.listening === false) return { text: 'On · the listener is off', tone: 'text-amber-500' };
+  return { text: 'On', tone: 'text-green-600' };
+}
 
 function LineList({ theme, lines, status, loadError, zone, onRetry, onEdit, opening, error }) {
   return (
@@ -348,27 +396,28 @@ function LineList({ theme, lines, status, loadError, zone, onRetry, onEdit, open
         loadError ? null : <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : lines.length === 0 ? (
         !loadError && <p className={`text-xs ${theme.textMuted}`}>No phone lines yet. New line makes the first one.</p>
-      ) : lines.map((l) => (
-        <div key={l.id} data-line={l.id} className={`flex items-center justify-between gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary} text-xs`}>
-          <span className="flex flex-col gap-0.5 min-w-0">
-            <span className="flex items-center gap-2">
-              <span className="font-bold truncate">{l.name}</span>
-              {closedByGate(l)
-                ? <span className="text-amber-500">Closed</span>
-                : <span className={l.enabled ? 'text-green-600' : theme.textMuted}>{l.enabled ? 'On' : 'Off'}</span>}
+      ) : lines.map((l) => {
+        const state = lineState(l, status, theme);
+        return (
+          <div key={l.id} data-line={l.id} className={`flex items-center justify-between gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary} text-xs`}>
+            <span className="flex flex-col gap-0.5 min-w-0">
+              <span className="flex flex-wrap items-center gap-x-2">
+                <span className="font-bold truncate">{l.name}</span>
+                <span className={state.tone}>{state.text}</span>
+              </span>
+              <span className={`text-[10px] ${theme.textMuted}`}>
+                {`${l.profile?.name ? profileLabel(l.profile) : 'Default profile'} · ${l.project?.name ?? 'No project yet'}`}
+              </span>
+              <span className={`text-[10px] ${theme.textMuted}`}>
+                {plural(l.callsToday, 'call')} today{l.lastCallAt ? ` · last ${formatMoment(l.lastCallAt, zone)}` : ''}
+              </span>
             </span>
-            <span className={`text-[10px] ${theme.textMuted}`}>
-              {`${l.profile?.name ?? 'Default profile'} · ${l.project?.name ?? 'No project yet'}`}
-            </span>
-            <span className={`text-[10px] ${theme.textMuted}`}>
-              {plural(l.callsToday, 'call')} today{l.lastCallAt ? ` · last ${formatMoment(l.lastCallAt, zone)}` : ''}
-            </span>
-          </span>
-          <button type="button" onClick={() => onEdit(l)} disabled={opening} aria-label={`Edit ${l.name}`} className="min-h-11 md:min-h-0 underline shrink-0">
-            Edit
-          </button>
-        </div>
-      ))}
+            <button type="button" onClick={() => onEdit(l)} disabled={opening} aria-label={`Edit ${l.name}`} className="min-h-11 md:min-h-0 underline shrink-0">
+              Edit
+            </button>
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -392,10 +441,13 @@ function LineEditor({ theme, api, saved, form, set, setName, setEngine, voices, 
   const withSaved = (options, value, label) => (value !== undefined && value !== null && value !== ''
     && !options.some((o) => o.value === value) ? [...options, { value, label }] : options);
   const profileOptions = withSaved([{ value: '', label: 'Default profile' }, ...profiles
-    .filter((p) => p.enabled || p.id === saved?.profile?.id).map((p) => ({ value: p.id, label: p.name }))],
-  saved?.profile?.id, `${saved?.profile?.name ?? 'This profile'} (not offered now)`);
+    .filter((p) => p.enabled || p.id === saved?.profile?.id).map((p) => ({ value: p.id, label: profileLabel(p) }))],
+  saved?.profile?.id, saved?.profile?.enabled === false && saved.profile.name ? profileLabel(saved.profile)
+    : `${saved?.profile?.name ?? 'This profile'} (not offered now)`);
+  // A saved project always exists (a deleted one nulls the line's), so once the list has loaded, one missing from it
+  // is one this admin doesn't maintain or own. Until then, just its name.
   const projectOptions = withSaved([{ value: '', label: 'No project yet' }, ...projects.map((p) => ({ value: p.id, label: p.name }))],
-    saved?.project?.id, `${saved?.project?.name ?? 'This project'} (not offered now)`);
+    saved?.project?.id, `${saved?.project?.name ?? 'This project'}${projectsLoaded ? " (you don't maintain it)" : ''}`);
   const modelOptions = withSaved(models.map((m) => ({ value: m.id, label: modelLabel(m) })), saved?.model, `${saved?.model} (not offered now)`);
   const engineOptions = withSaved(voices.map((v) => ({ value: v.engine, label: v.label })), saved?.voice.engine,
     `${engineNames[saved?.voice.engine] ?? saved?.voice.engine} (not set up here)`);
@@ -471,7 +523,7 @@ function LineEditor({ theme, api, saved, form, set, setName, setEngine, voices, 
       </Field>
       <div className="flex flex-wrap gap-4">
         <Field theme={theme} label="Longest call (minutes)">
-          <input type="number" aria-label="Longest call (minutes)" min={1} max={60} step={1} value={form.maxCallMin}
+          <input type="number" aria-label="Longest call (minutes)" min={1} max={60} step="any" value={form.maxCallMin}
             onChange={(e) => set({ maxCallMin: e.target.value })} className={`${input} w-24`} />
         </Field>
         <Field theme={theme} label="Calls at once">
@@ -481,6 +533,7 @@ function LineEditor({ theme, api, saved, form, set, setName, setEngine, voices, 
         <Field theme={theme} label="Tokens a day">
           <input type="number" aria-label="Tokens a day" min={0} step={1000} value={form.dailyTokens} placeholder="default"
             onChange={(e) => set({ dailyTokens: e.target.value })} className={`${input} w-32`} />
+          <span className={`text-[10px] ${theme.textSecondary}`}>{TOKENS_HINT}</span>
         </Field>
       </div>
       <label className="flex items-center gap-2 text-xs min-h-11 md:min-h-0">
@@ -601,7 +654,7 @@ function Snippet({ theme, line, status, showToast }) {
 function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
   const [calls, setCalls] = useState(null);
   const [failed, setFailed] = useState(null);
-  const [open, setOpen] = useState(null);   // { id, messages } of the transcript on show
+  const [open, setOpen] = useState(null);   // { id, messages, stats } of the transcript on show
   const [busyId, setBusyId] = useState(null);
 
   const load = useCallback(async () => {
@@ -618,7 +671,8 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
     if (open?.id === c.id) { setOpen(null); return; }
     setBusyId(c.id);
     try {
-      setOpen({ id: c.id, messages: (await api.call(c.id)).messages });
+      const full = await api.call(c.id);
+      setOpen({ id: c.id, messages: full.messages, stats: Array.isArray(full.stats) ? full.stats : [] });
     } catch (e) {
       showToast?.(e.message, 5000);
     } finally {
@@ -675,6 +729,11 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
                   <span>{m.content}</span>
                 </p>
               ))}
+              {open.stats.length > 0 && (
+                <ul data-testid="phone-turn-timings" aria-label="Timings per turn" className={`flex flex-col text-[10px] ${theme.textMuted}`}>
+                  {open.stats.map((s, i) => <li key={i}>{turnLine(s, i + 1)}</li>)}
+                </ul>
+              )}
             </div>
           )}
         </div>

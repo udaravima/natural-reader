@@ -2,8 +2,10 @@
 Talk does. A piece ends at a full stop, question or exclamation mark followed by white space, or at a blank line;
 while nothing has been said yet, past `first_clause_chars` characters (0: never) the opening is cut at a comma,
 semicolon or colon instead, because the time to the first sound grows with the first sentence. Markdown is dropped
-and a piece with no letter or digit is not spoken. Talk's markdown handling is richer; the replies a phone agent
-writes are plain sentences, so emphasis, code marks, links, headings and list marks are enough here.
+by `plain()`, which is Talk's `markdownToSpeech` (src/utils/markdownToSpeech.js) rule for rule (R4.2), applied per
+piece as Talk applies it, and a piece with no letter or digit is not spoken. The two change together: a rule added
+to one is added to the other, with a case in server/tests/fixtures/speech/sentences_cases.json, which both test
+suites run.
 
 `Piece.end` is where the piece ends in the reply as written (markdown counted), so a reply can be cut at what the
 caller actually heard."""
@@ -45,7 +47,8 @@ _BLANK_LINES = re.compile(r"\n{3,}")
 def plain(raw: str) -> str:
     """Talk's markdownToSpeech (src/utils/markdownToSpeech.js), rule for rule and in the same order, so a caller
     hears what Talk would say: code fences are dropped, paired emphasis loses its marks (a lone underscore in a
-    reference stays), headings get a pause mark."""
+    reference stays), headings get a pause mark. Change it only together with markdownToSpeech, and add the shared
+    case."""
     s = _FENCE.sub(" ", raw)
     s = _CODE.sub(r"\1", s)
     s = _IMAGE.sub(r"\1", s)

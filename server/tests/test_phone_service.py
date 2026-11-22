@@ -34,7 +34,7 @@ from server.phone.config import PhoneConfig
 from server.phone.media import Audio, HungUp
 from server.phone.segmenter import SpeechEnded, SpeechStarted
 from server.phone.store import Clip, LineVoice
-from server.services import console_settings, inference_budget, model_settings
+from server.services import chat_options, console_settings, inference_budget, model_settings
 from server.speech import service as speech_service
 from server.speech.base import EngineStatus, Transcript
 from server.tests import seed
@@ -129,8 +129,16 @@ async def messages_of(pool, session_id: str) -> list[tuple]:
 
 async def refused(svc, media) -> None:
     """A call that must be refused: handle() returns once its clip has played. Bounded, because a call let through
-    by mistake would wait for a hang-up nobody sends, and a regression should fail, not hang the suite."""
+    by mistake would wait for a hang-up nobody sends, and a regression should fail, not hang the suite. Every
+    refusal is also checked for audio after the hang-up (R9.6): a sender left running would try its next frame
+    within 20 ms."""
     await asyncio.wait_for(svc.handle(media), 5)
+    await no_audio_after_the_hang_up(media)
+
+
+async def no_audio_after_the_hang_up(media) -> None:
+    await asyncio.sleep(0.1)
+    assert media.hang_ups >= 1 and media.after_hang_up == 0, "audio went down the line after the 0x00 (R9.6)"
 
 
 async def until(check, timeout: float = 10.0) -> None:
@@ -146,15 +154,19 @@ async def until(check, timeout: float = 10.0) -> None:
 class FakeMedia:
     """The PBX's end of one call. `say` is (seconds after the call's events start, Audio) pairs. The caller hangs up
     when the test says (`caller_hangs_up`); we hang up with `hang_up()`. Like the AudioSocket adapter, a send after
-    the end raises ConnectionError, and hanging up twice is harmless."""
+    the end raises ConnectionError, and hanging up twice is harmless. Any send tried once our hang-up has begun is
+    counted in `after_hang_up`: on the wire it would follow the 0x00."""
     sample_rate = 8000
 
     def __init__(self, line_id: str, say=()) -> None:
         self.line_id = line_id
         self.say = list(say)
         self.frames: list[bytes] = []
+        self.sent_at: list[float] = []
         self.hang_ups = 0
+        self.after_hang_up = 0
         self.first_frame_at: float | None = None
+        self.first_sound_at: float | None = None
         self.gone = asyncio.Event()
         self.gone_at: float | None = None
 
@@ -170,15 +182,22 @@ class FakeMedia:
         yield HungUp("caller")
 
     async def send(self, frame: bytes) -> None:
+        if self.hang_ups:
+            self.after_hang_up += 1
         if self.gone.is_set():
             raise ConnectionError("the call has ended")
         assert len(frame) == 320
+        now = asyncio.get_running_loop().time()
         if self.first_frame_at is None:
-            self.first_frame_at = asyncio.get_running_loop().time()
+            self.first_frame_at = now
+        if self.first_sound_at is None and frame.strip(b"\0"):
+            self.first_sound_at = now
         self.frames.append(frame)
+        self.sent_at.append(now)
 
     async def hang_up(self) -> None:
         self.hang_ups += 1
+        await asyncio.sleep(0)          # the 0x00 drains, as the adapter's does: a frame sent now would follow it
         self._end()
 
     def caller_hangs_up(self) -> None:
@@ -203,6 +222,29 @@ def router(monkeypatch):
     every model, unless a test says otherwise."""
     fake = FakeRouter()
     monkeypatch.setattr(service, "get_router", lambda: fake)
+    return fake
+
+
+class QuietEars:
+    """What start() warms when a test doesn't say (F13): a recognizer that notes the warm-up and loads nothing, so no
+    test starts loading a real Whisper model in a thread."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple] = []
+        self.warmed = 0
+
+    def engine_for(self, options, language=None):
+        self.asked.append((options, language))
+        return self
+
+    def warm(self) -> None:
+        self.warmed += 1
+
+
+@pytest.fixture(autouse=True)
+def ears(monkeypatch):
+    fake = QuietEars()
+    monkeypatch.setattr(speech_service, "engine_for", fake.engine_for)
     return fake
 
 
@@ -327,7 +369,7 @@ async def test_unknown_line_hangs_up_silently(pool, sessions):
     for line_id in (str(uuid.uuid4()), "not-a-line"):
         media = FakeMedia(line_id)
         await refused(svc, media)
-        assert media.hang_ups == 1 and media.frames == []
+        assert media.hang_ups == 1 and media.heard() == set()     # silence from connect, no clip, then the hang-up
     async with pool.connection() as conn:
         assert (await (await conn.execute("SELECT count(*) FROM phone_calls")).fetchone())[0] == before
     assert sessions == []
@@ -460,8 +502,8 @@ async def test_a_slow_model_list_doesnt_hold_the_greeting(pool, real_call, caplo
     loop = asyncio.get_running_loop()
     connected = loop.time()
     running = asyncio.create_task(svc.handle(media))
-    await until(lambda: media.first_frame_at is not None, timeout=5)
-    assert media.first_frame_at - connected < 2.0
+    await until(lambda: media.first_sound_at is not None, timeout=5)
+    assert media.first_sound_at - connected < 2.0
     await until(lambda: GREETED in media.heard())
     assert len(router.asked) == 1 and router.asked[0]["model"] == line.model_id
     assert any(line.id in r.getMessage() and line.model_id in r.getMessage() and r.levelno == logging.INFO
@@ -554,7 +596,8 @@ async def test_a_router_not_started_takes_the_db_down_path(pool, sessions, monke
     await refused(service.PhoneService(CFG), media)
     assert media.heard() == {BUSY} and media.hang_ups == 1 and sessions == []
     assert await calls_of(pool, line.id) == []
-    assert any(line.id in r.getMessage() and "RuntimeError" in r.getMessage() for r in caplog.records)
+    [logged] = [r for r in caplog.records if line.id in r.getMessage() and "can't be checked" in r.getMessage()]
+    assert "RouterNotStarted" in logged.getMessage() and logged.exc_info is None    # an outage, not a bug (F12)
 
 
 async def test_third_call_hears_busy(pool, sessions):
@@ -577,7 +620,7 @@ async def test_third_call_hears_busy(pool, sessions):
     fourth = FakeMedia(line.id)
     running.append(asyncio.create_task(svc.handle(fourth)))
     await until(lambda: len(sessions) == 3)
-    assert fourth.frames == []                     # it got in: the session, not a clip, speaks to it
+    assert fourth.heard() == set()                 # it got in: the session, not a clip, speaks to it
     for media in (second, fourth):
         media.caller_hangs_up()
     await asyncio.wait_for(asyncio.gather(*running), 5)
@@ -632,15 +675,108 @@ async def test_db_down_at_connect(pool, sessions, monkeypatch, caplog):
         connected = loop.time()
         await asyncio.wait_for(warm.handle(media), 5)     # no exception escapes
         assert media.heard() == {BUSY} and media.hang_ups == 1
-        assert media.first_frame_at - connected < 2.0     # before Asterisk's 2 s without audio drops the call
+        assert media.first_sound_at - connected < 2.0     # the clip itself, not only the keep-alive's silence
+        await no_audio_after_the_hang_up(media)
         cold = FakeMedia(line.id)
         await asyncio.wait_for(service.PhoneService(CFG).handle(cold), 5)
-        assert cold.frames == [] and cold.hang_ups == 1
+        assert cold.heard() == set() and cold.hang_ups == 1
+        await no_audio_after_the_hang_up(cold)
     assert down.timeouts and all(t is not None and t <= 1.0 for t in down.timeouts)
     monkeypatch.setattr(db, "_pool", pool)
     assert [c["end_reason"] for c in await calls_of(pool, line.id)] == ["closed"]    # nothing recorded while down
     assert sessions == []
     assert any(line.id in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
+    # F12: a database that is away is an outage, named by type alone, with no traceback
+    checked = [r for r in caplog.records if "can't be checked" in r.getMessage()]
+    assert checked and all(r.exc_info is None for r in checked)
+    assert {m for r in checked for m in ("PoolTimeout", "DatabaseUnavailable") if m in r.getMessage()} == {
+        "PoolTimeout", "DatabaseUnavailable"}
+
+
+async def test_a_bug_in_the_gate_is_logged_with_its_traceback(pool, sessions, monkeypatch, caplog):
+    # Final fix F12: only an outage (the database, the pool, the network, the router not started) is logged by its
+    # type alone. Anything else at connect is a bug, and its traceback is what makes it fixable.
+    line = await make_line(pool)
+
+    async def broken(conn, line_id):
+        raise KeyError("a bug")
+    monkeypatch.setattr(store, "get_line", broken)
+    media = FakeMedia(line.id)
+    await refused(service.PhoneService(CFG), media)
+    assert media.heard() == set() and sessions == []
+    [logged] = [r for r in caplog.records if line.id in r.getMessage() and "can't be checked" in r.getMessage()]
+    assert logged.exc_info is not None and logged.exc_info[0] is KeyError
+
+
+class SlowPool:
+    """The app's pool, but its first `slow` connection waits take `wait` seconds each (a busy database at connect).
+    Everything else is the real pool's."""
+
+    def __init__(self, real, slow: int = 2, wait: float = 0.9) -> None:
+        self.real, self.slow, self.wait = real, slow, wait
+
+    @asynccontextmanager
+    async def connection(self, timeout=None):
+        if self.slow > 0:
+            self.slow -= 1
+            await asyncio.sleep(self.wait)
+        async with self.real.connection(timeout=timeout) as conn:
+            yield conn
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+async def test_silence_goes_down_the_line_from_connect_until_the_greeting(pool, real_call, monkeypatch):
+    # Final fix F4. Asterisk drops a call after 2 s without audio from the app. Two slow connection waits (the gate's,
+    # then open_call's) take 1.8 s before the session's pacer starts; the keep-alive's silence fills them.
+    line = await make_line(pool)
+    monkeypatch.setattr(db, "_pool", SlowPool(pool))
+    svc = service.PhoneService(CFG)
+    media = FakeMedia(line.id)
+    loop = asyncio.get_running_loop()
+    connected = loop.time()
+    running = asyncio.create_task(svc.handle(media))
+    await until(lambda: GREETED in media.heard(), timeout=5)
+    assert media.first_frame_at - connected < 0.1
+    assert media.first_sound_at - connected > 1.7                  # the waits really happened before the greeting
+    greeting = next(i for i, f in enumerate(media.frames) if f.strip(b"\0"))
+    times = [connected, *media.sent_at[:greeting + 1]]
+    assert max(b - a for a, b in zip(times, times[1:])) < 0.1
+    media.caller_hangs_up()
+    await asyncio.wait_for(running, 5)
+    await svc.stop()
+
+
+async def test_a_stalled_gate_takes_the_database_down_path_within_its_bound(pool, sessions, monkeypatch):
+    # Final fix F4. A gate query that never returns (a lock wait, a stuck server) is bounded at GATE_S: past it the
+    # line can't be checked, so this process's `busy` clip plays (the gate read the clips before it stalled) and
+    # nothing is recorded.
+    line = await make_line(pool)
+
+    async def stuck(conn, user_id, project_id):
+        await asyncio.sleep(30)
+    monkeypatch.setattr(service, "project_role", stuck)
+    media = FakeMedia(line.id)
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await asyncio.wait_for(service.PhoneService(CFG).handle(media), 3.0 + 1.5)
+    assert 2.9 < loop.time() - began < 3.0 + 1.0
+    assert media.heard() == {BUSY} and media.hang_ups == 1 and sessions == []
+    await no_audio_after_the_hang_up(media)
+    assert await calls_of(pool, line.id) == []
+    assert service.GATE_S == 3.0
+
+
+async def test_a_call_that_cannot_be_opened_hears_busy_and_nothing_after_the_hang_up(pool, sessions, monkeypatch):
+    line = await make_line(pool)
+
+    async def broken(*args, **kwargs):
+        raise OSError("the database went away")
+    monkeypatch.setattr(store, "open_call", broken)
+    media = FakeMedia(line.id)
+    await refused(service.PhoneService(CFG), media)
+    assert media.heard() == {BUSY} and media.hang_ups == 1 and sessions == []
 
 
 # --- real calls ---
@@ -795,19 +931,163 @@ async def test_start_is_a_no_op_when_the_listener_is_off(monkeypatch):
     await svc.stop()
 
 
-def test_the_app_starts_the_service_with_the_database_and_stops_it_first():
-    """Read, not imported (importing server.app loads Kokoro). `start()` runs in `_db_ready`, the start-up steps
-    that need the database (at start, or when a late database comes up); `stop()` runs first at shutdown, while the
-    model router, the voices and the database are still there for the calls' last turns."""
+def test_the_app_starts_the_listener_after_the_database_and_the_router_and_stops_it_first():
+    """Read, not imported (importing server.app loads Kokoro). Every call needs the database, and its gate asks the
+    model router at connect (R10.10), so the listener starts only once both are up (final fix F6):
+    - on a normal boot, in `_startup` itself, after `start_llm_router()`, when the database is ready;
+    - on the late-database path, in `_db_ready`, only when the router is already up.
+    `stop()` runs first at shutdown, while the model router, the voices and the database are still there for the
+    calls' last turns."""
     tree = ast.parse((Path(__file__).parents[1] / "app.py").read_text())
     funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
 
+    def own(node):
+        """The nodes of a function's own body, not of the functions defined inside it."""
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield child
+                yield from own(child)
+
     def awaited(node) -> list[str]:
-        """What the function awaits, in source order."""
-        found = [(n.lineno, ast.unparse(n.value.func)) for n in ast.walk(node)
+        """What the function itself awaits, in source order."""
+        found = [(n.lineno, ast.unparse(n.value.func)) for n in own(node)
                  if isinstance(n, ast.Await) and isinstance(n.value, ast.Call)]
         return [name for _, name in sorted(found)]
-    assert "phone_service.start" in awaited(funcs["_db_ready"])
+
+    def guard_of(node, call: str) -> str:
+        """The test of the `if` the awaited `call` sits in."""
+        [cond] = [ast.unparse(n.test) for n in own(node) if isinstance(n, ast.If)
+                  and any(isinstance(a, ast.Await) and ast.unparse(a.value.func) == call for a in ast.walk(n))]
+        return cond
+
+    startup = awaited(funcs["_startup"])
+    assert "phone_service.start" in startup, "the normal boot starts the listener in _startup"
+    assert startup.index("start_llm_router") < startup.index("phone_service.start")
+    assert guard_of(funcs["_startup"], "phone_service.start") == "db_is_ready()"
+    assert guard_of(funcs["_db_ready"], "phone_service.start") == "router_up"
     shutdown = awaited(funcs["_shutdown"])
     assert shutdown[0] == "phone_service.stop"
     assert shutdown.index("phone_service.stop") < shutdown.index("chat_orchestrator.drain_background")
+
+
+LISTENING = PhoneConfig(listen="127.0.0.1:0", allow=(), pbx_address="127.0.0.1:0")
+
+
+async def test_a_call_still_at_the_gate_when_the_app_stops_is_hung_up_not_refused(pool, monkeypatch):
+    # Final fix F14. The line takes one call; the first is still ending (its last turn closing) when the second
+    # call's gate returns, after stop() began. That call is hung up and recorded as nothing, not refused `busy`.
+    line = await make_line(pool, max_calls=1)
+    ended = asyncio.Event()
+
+    class SlowToEnd:
+        def __init__(self, media, *args) -> None:
+            self.media = media
+
+        async def run(self) -> CallOutcome:
+            async for event in self.media.events():
+                if isinstance(event, HungUp):
+                    break
+            await asyncio.sleep(0.5)                # the last turn's save
+            ended.set()
+            return CallOutcome("caller", 0, [])
+    monkeypatch.setattr(service, "CallSession", SlowToEnd)
+    real_get_line, at_gate, release = store.get_line, asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def held(conn, line_id):
+        nonlocal reads
+        reads += 1
+        if reads == 2:                              # the second call: wait at its gate
+            at_gate.set()
+            await release.wait()
+        return await real_get_line(conn, line_id)
+    monkeypatch.setattr(store, "get_line", held)
+    svc = service.PhoneService(CFG)
+    first, second = FakeMedia(line.id), FakeMedia(line.id)
+    running = [asyncio.create_task(svc.handle(first))]
+    await until(lambda: svc.status()["active"] == 1)
+    running.append(asyncio.create_task(svc.handle(second)))
+    await asyncio.wait_for(at_gate.wait(), 5)
+    stopping = asyncio.create_task(svc.stop())
+    await until(lambda: second.hang_ups == 1)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(stopping, *running), 10)
+    assert ended.is_set()                            # the first call was still ending when the second's gate returned
+    assert second.heard() == set()                   # no `busy` clip to a line that is closing
+    assert [c["end_reason"] for c in await calls_of(pool, line.id)] == ["shutdown"]
+
+
+async def test_start_warms_the_recognizer_calls_hear_with(pool, monkeypatch, ears):
+    # Final fix F13: the first caller's first question shouldn't wait for the speech model to load. The engine is the
+    # one a call asks for: the deployment's, for the line language.
+    monkeypatch.setattr(vad, "_session", lambda: None)
+    svc = service.PhoneService(LISTENING)
+    await svc.start()
+    try:
+        await until(lambda: ears.warmed == 1, timeout=5)
+        [(options, language)] = ears.asked
+        assert language == "en" and isinstance(options, chat_options.ChatOptions)
+    finally:
+        await svc.stop()
+
+
+async def test_a_slow_warm_never_holds_the_start_and_stop_cancels_it(pool, monkeypatch, ears):
+    monkeypatch.setattr(vad, "_session", lambda: None)
+    reading, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def slow_options(conn):
+        reading.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+    monkeypatch.setattr(chat_options, "load_chat_options", slow_options)
+    svc = service.PhoneService(LISTENING)
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+    await asyncio.wait_for(svc.start(), 5)
+    assert loop.time() - began < 1.0 and svc.status()["listening"] is True
+    await asyncio.wait_for(reading.wait(), 5)
+    assert ears.warmed == 0
+    began = loop.time()
+    await asyncio.wait_for(svc.stop(), 5)
+    assert loop.time() - began < 2.0
+    assert cancelled.is_set() and ears.warmed == 0      # stop() cancelled the warm-up's read; nothing was warmed
+
+
+async def test_a_failed_warm_is_logged_and_the_listener_stays_on(pool, monkeypatch, caplog):
+    monkeypatch.setattr(vad, "_session", lambda: None)
+
+    def no_engine(options, language=None):
+        raise speech_service.EngineUnavailable("no speech model here")
+    monkeypatch.setattr(speech_service, "engine_for", no_engine)
+    svc = service.PhoneService(LISTENING)
+    await svc.start()
+    try:
+        await until(lambda: any("warm" in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records),
+                    timeout=5)
+        assert svc.status()["listening"] is True
+    finally:
+        await svc.stop()
+
+
+async def test_start_is_idempotent_even_when_two_starts_overlap(pool, monkeypatch):
+    # Final fix F6: on the late-database path `_db_ready` and the boot can both call start(). One listener, one
+    # stale-call sweep; a start while listening returns at once.
+    monkeypatch.setattr(vad, "_session", lambda: None)
+    served = []
+    real_serve = audiosocket.serve
+
+    async def counting(cfg, handler):
+        served.append(cfg.listen)
+        await asyncio.sleep(0.05)                   # the bind takes a moment: the second start arrives meanwhile
+        return await real_serve(cfg, handler)
+    monkeypatch.setattr(audiosocket, "serve", counting)
+    svc = service.PhoneService(PhoneConfig(listen="127.0.0.1:0", allow=(), pbx_address="127.0.0.1:0"))
+    try:
+        await asyncio.gather(svc.start(), svc.start())
+        await svc.start()
+        assert served == ["127.0.0.1:0"] and svc.status()["listening"] is True
+    finally:
+        await svc.stop()

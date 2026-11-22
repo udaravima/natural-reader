@@ -116,7 +116,10 @@ means hang up and `0xFF` an error. `0x03` is a key press (Asterisk sends it; pha
 ignores it, and the app never sends one).
 
 **Asterisk drops a call after 2 seconds with no audio from the app.** The app therefore
-sends a frame every 20 ms for the whole call, silence included.
+sends a frame every 20 ms for the whole call, silence included, from the moment the call
+connects: while it checks the line and opens the call, the caller hears silence, then the
+welcome. Those checks are given at most 3 seconds; past that the caller hears "busy" (or,
+if this server process hasn't loaded the line's phrases yet, just the hang-up).
 
 ## Settings
 
@@ -133,7 +136,7 @@ the listener off (the log says why).
 | `PHONE_MAX_CALLS` | `2` | 1 to 20 | Calls at once across all lines. Each line has its own cap too; a call over either hears "busy". |
 | `PHONE_IDLE_S` | `30` | 1 to 600, **seconds** | Seconds of a silent caller before the assistant asks "Are you still there?". After a second period of silence it says goodbye and hangs up. |
 | `PHONE_CHECKING_S` | `4` | 0.5 to 60, **seconds** | How long a tool (a document search, say) may run before the caller hears one "Still checking" phrase. |
-| `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. Constant background sound at talking level, such as a television next to the phone, still keeps a reply paused, exactly as in Talk: this cap only bounds how much audio is held. |
+| `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. Constant background sound at talking level, such as a television next to the phone, still keeps a reply paused, exactly as in Talk: the caller hears silence for up to this long, then about a second of the reply, over and over ([why](#troubleshooting)). Lowering it to 10–15 shortens each silent stretch. |
 
 How the caller is *heard* is not repeated here. The voice-activity thresholds, the
 silence that ends a turn (700 ms), the pre-roll and the noise limits are the **speech
@@ -157,7 +160,7 @@ chat sound thinner here; listen to the welcome before you ship a line.
 | Longest call | the line, **Longest call (minutes)**, 1 to 60 | 10 minutes | the call ends, recorded as "reached the time limit" |
 | Calls at once on a line | the line, **Calls at once**, 1 to 20 | 2 | the next caller hears "busy" |
 | Calls at once, all lines | `PHONE_MAX_CALLS` | 2 | the next caller hears "busy" |
-| Tokens a day | the line, **Tokens a day** (empty = the deployment's default, `INFERENCE_DAILY_TOKEN_BUDGET`) | the deployment's | the line is closed until the next day (recorded "token budget") |
+| Tokens a day | the line, **Tokens a day**. Empty: the server's default (`INFERENCE_DAILY_TOKEN_BUDGET`). 0: no limit | the server's (none when that is unset or 0) | the line is closed until the next day (recorded "line's token budget was used up") |
 
 The counters live in the backend process. With `WORKERS` above 1, **each worker counts
 its own calls**, so the real ceiling is the cap times the number of workers. The
@@ -185,7 +188,9 @@ answering by two programs, look for a leftover process.
   No audio is stored, and no caller number: the phone system does not send it in phase 1.
 - **The logs** hold ids, durations and end reasons, never what anyone said or any
   document text.
-- **Spend is bounded** by the tokens a day, the two call caps and the longest call.
+- **Spend is bounded** by the two call caps and the longest call, and by the tokens a day when a token budget
+  applies. A line's **Tokens a day** of 0 means no limit, and so does an empty one on a server with no daily
+  budget.
 - **The line's account** can't sign in, is never listed under **People**, and can't be
   edited there: its limits are the line's.
 
@@ -268,15 +273,19 @@ causes, in the order the app checks them, with what the console shows for each:
 | Cause | The list shows | The call list says |
 |---|---|---|
 | The line is **off** (never switched on, or switched off) | **Off** | "line was closed" |
-| It has **no project** (the project was deleted, or removed from the line) | **Closed** (amber) | "line was closed" |
-| It **lost access** to its project: a maintainer removed the line's account from the project's members. **Give it access again** in the editor puts it back (only a maintainer or owner of that project can) | **Closed** (amber), and the editor says "No access to <project>" | "line was closed" |
-| Its **token budget** for the day is spent (**Tokens a day**, or the deployment's budget; it resets with the day) | **On** | "line's token budget was used up" |
-| Its **model was withdrawn**: the environment no longer allows it, the console's chat list no longer offers it, or the provider no longer has it | **On** | "line was closed" |
+| It has **no project** (the project was deleted, or removed from the line) | **Closed: no project** (amber) | "line was closed" |
+| It **lost access** to its project: a maintainer removed the line's account from the project's members. **Give it access again** in the editor puts it back (only a maintainer or owner of that project can) | **Closed: no access** (amber), and the editor says "No access to <project>" | "line was closed" |
+| Its **token budget** for the day is spent (**Tokens a day**, or the deployment's budget; it resets with the day) | **Closed: token budget used up** (amber) | "line's token budget was used up" |
+| Its **model was withdrawn**: the environment no longer allows it, or the console's chat list no longer offers it | **Closed: model withdrawn** (amber) | "line was closed" |
+| Its **model's provider no longer has it** | **On** (the list doesn't ask the provider) | "line was closed" |
 
-So the badge only knows the project causes. For a line that reads **On** and still answers
-"closed", read the call list for the budget, and for a model the backend's log line
-`phone line <id>: its model <model> may no longer answer; closed`. Pick another model, or
-offer the old one again.
+The list reads these with the call's own checks, except the provider's model list, which
+needs the network: a line that reads **On** and still answers "closed" has lost its model
+at the provider, and the backend logs `phone line <id>: its model <model> may no longer
+answer; closed`. Pick another model, or offer the old one again. While the listener is off
+(no `PHONE_AUDIOSOCKET_LISTEN`, or it couldn't start), a line that would answer reads
+**On · the listener is off**: no call can reach it until the listener is set and the
+backend restarted.
 
 **Callers hear "busy".** A line over its **Calls at once**, or the service over
 `PHONE_MAX_CALLS`, answers "busy" and hangs up; the refusal is recorded as "line was
@@ -294,5 +303,12 @@ slow for a phone is the usual cause; a smaller or hosted model, a faster voice (
 and `SPEECH_WINDOW_SILENCE_MS` are the levers (the last is shared with Talk).
 
 **A TV or a busy room keeps the reply paused.** As in Talk, sound at talking level over
-the line counts as someone talking. `PHONE_MAX_UTTERANCE_S` only caps how much of it is
-held. See [DEPLOYMENT.md § Talk in a busy room](DEPLOYMENT.md#talk-in-a-busy-room).
+the line counts as someone talking. What the caller hears: the reply goes silent for up to
+`PHONE_MAX_UTTERANCE_S` (30 seconds by default), then plays for about a second, then goes
+silent again, and so on. That is because the app pauses the reply when the sound starts,
+cuts the unbroken sound into a clip at the cap, resumes once the recognizer has judged the
+clip not to be speech, and pauses again a quarter of a second into the next stretch. (If
+the recognizer does make out words in the noise, say a TV's, they are taken as the
+caller's.) The lever is `PHONE_MAX_UTTERANCE_S`: lowering it to 10–15 seconds shortens each
+silent stretch, at the cost of cutting a long-winded caller's question into more clips. See
+[DEPLOYMENT.md § Talk in a busy room](DEPLOYMENT.md#talk-in-a-busy-room).
