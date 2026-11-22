@@ -47,3 +47,5 @@ deploy.sh
 
 # Call benchmark output (scripts/bench_call.py)
 bench-out/
+
+tmp/*
