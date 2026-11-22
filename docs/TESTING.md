@@ -564,6 +564,25 @@ frontend half is now a thin SSE reader plus a pure event reducer:
 | `chatTransport.test.js` (budget half) | — | `budgetDetail` + `formatResetAt` |
 | `ChatSidebar.jsx` tests (meter) | — | "N tokens left today" rendering — C1 removed the dedicated `ChatSidebar.inference.test.jsx`/source-toggle file along with the toggle itself |
 
+### Phone lines (unreleased)
+
+[PHONE_LINES.md](PHONE_LINES.md) describes the feature. Backend tests run on the scratch database like every other;
+the call tests use fake media, a fake recognizer and a fake voice unless a row says otherwise.
+
+| File | Asserts |
+|---|---|
+| `test_phone_audiosocket.py`, `test_phone_config.py` | frame encode and decode, split reads and unknown kinds; a peer outside the allow list is closed before a byte is read; no public listener without an allow list; every `PHONE_*` default, range and bad value |
+| `test_phone_vad.py`, `test_phone_segmenter.py`, `test_phone_pacer.py` | Silero on committed speech clips (speech starts and ends at the right frames, silence and tones stay silent); the segmenter's runs; the pacer's 20 ms cadence under a fake clock, silence fill, pause and resume, and the characters actually played |
+| `test_phone_text.py`, `test_phone_voice.py` | the sentence splitter and the spoken-text rules, ported from Talk and checked against shared JSON cases; a line's voice at 8 kHz |
+| `test_phone_call.py` | the call loop: greeting first, filler on a tool, barge-in cuts what was heard, noise resumes, idle and limit endings |
+| `test_phone_service.py` | who is let through (unknown line, off, removed membership, deleted project, spent budget, withdrawn model), the busy caps, a database that is down at connect, two calls at once, a hang-up mid-answer, stop and start |
+| `test_phone_store.py`, `test_phone_admin_api.py`, `test_phone_line_users.py` | lines, service users, membership, clips, calls and transcripts; the maintainer rule; the admin API; a sign-in whose verified email equals a line's never links to it; People and notifications skip lines |
+| `PhoneLinesSection.test.jsx` | the console section: list, form validation, the warning, the snippet with real values, calls and transcripts |
+| `scripts/phone_fake_pbx.py` (not a test) | the fake PBX: calls a line over AudioSocket as Asterisk would (line id first, a 20 ms frame every 20 ms with silence between questions, hang-up at the end), records what comes back to `phone-call-<time>.wav` and prints each question's first-sound time; `docs/PHONE_LINES.md` has its flags |
+| `test_phone_e2e.py` | **skipped unless `PHONE_E2E_MODEL` is set** (for example `ollama:gemma4:e4b`). Starts the real service on `127.0.0.1:0` with a line on a project holding a document, runs the fake PBX with `question1.wav`, and asserts: the first audio is the greeting; the answer is spoken (the fake PBX prints its seconds of sound); the call's row has `turns == 1` and `end_reason == "caller"`; the transcript holds the question. The answer audio is heard back by the same recognizer and must share at least two content words with the reply in the transcript, and the call's stats must hold a first-sound time. The test embeds its one-page document with the app's embedder (`nomic-embed-text` on the Ollama at `OLLAMA_URL`; `PHONE_E2E_EMBEDDING_MODEL` names another), first checks that `search_chunks` finds the opening hours for the question, and requires the reply to give the opening time ("9"). Everything is real: Silero, Whisper (the deployment's local engine; it fails, not skips, without the model files `~/.cache/huggingface/hub/models--Systran--faster-whisper-small` or whichever `SPEECH_MODEL` names), the chat engine, the model, Kokoro (`kokoro-v1.0.onnx` (or `KOKORO_MODEL_PATH`) and `voices-v1.0.bin`, both read from the working directory, so run pytest from the repository root). A CPU-only machine takes minutes: `PHONE_E2E_MODEL=ollama:gemma4:e4b python -m pytest server/tests/test_phone_e2e.py -q -s`, with the scratch database's environment |
+
+**Not covered by any test:** a call from a real handset through a real Asterisk (that walk is still to do), and timings on a real line. The fake PBX shows the whole path works; it can't say how Asterisk behaves.
+
 ### Everything else, by area
 
 | Area | Backend (`server/tests/`) | Frontend (`src/`) |

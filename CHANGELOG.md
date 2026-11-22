@@ -6,6 +6,24 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Phone lines: ring a number and talk to an assistant that knows a
+  project.** An admin makes a line in Admin → Phone lines (a name, who answers,
+  the project it knows, a model, a voice, a welcome message and limits), pastes
+  the three dialplan lines the console shows into Asterisk, and switches the
+  line on. A call is the same conversation as Talk (listen, think, speak, and a
+  caller who talks over the answer cuts it in), run on the server over
+  Asterisk's AudioSocket; each call is a chat the console shows as a transcript,
+  with how long it lasted and how long the first sound took. The listener is off
+  until `PHONE_AUDIOSOCKET_LISTEN` is set, only the peers in
+  `PHONE_AUDIOSOCKET_ALLOW` may connect, and the knobs are `PHONE_PBX_ADDRESS`,
+  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`, `PHONE_CHECKING_S` and
+  `PHONE_MAX_UTTERANCE_S`. Each line has a longest call, a calls-at-once cap and
+  a daily token budget; a project is attached only by a maintainer or owner, and
+  removing the line from its members closes the line. Phase 1 is English only,
+  and the app sends nothing to Asterisk: the admin pastes the lines in.
+  `scripts/phone_fake_pbx.py` calls a line the way Asterisk does, for trying a
+  setup without a phone system. Not yet tried on a real phone line. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md).
 - **Google's Chirp 3 HD voices can read the chat and Talk.** A third choice
   under Admin → Chat options → Voice for the chat and Talk, beside Kokoro and
   Gemini-TTS (`CHAT_VOICE=chirp` for a deployment). Chirp makes a sentence in
