@@ -240,3 +240,45 @@ def test_a_provider_prefix_with_no_model_is_refused_not_a_bare_name():
         assert not r.is_allowed(model_id)
     # A bare name that merely contains a colon is still a pre-C1 name.
     assert r.resolve("qwen2.5:7b")[1] == "qwen2.5:7b"
+
+
+async def test_load_and_in_memory_reach_only_a_self_hosted_ollama():
+    # Phone lines (R17.1, R17.8 I2): only a model in the memory of a server the deployer hosts is loaded or asked
+    # about. A hosted API has nothing to load and a request there may cost money: Gemini, an OpenAI-compatible API,
+    # an Ollama cloud model on the local server (`-cloud` or `:cloud`), and ollama.com itself get no request.
+    up = (FakeUpstream()
+          .on("POST", "/api/chat", lambda: httpx.Response(200, json={"done": True, "done_reason": "load"}))
+          .on("GET", "/api/ps", lambda: httpx.Response(200, json={"models": [
+              {"name": "m:latest", "context_length": 16384}]})))
+    router = Router(load_provider_configs({
+        "INFERENCE_PROVIDERS": "local,gem,or,com",
+        "INFERENCE_LOCAL_KIND": "ollama", "INFERENCE_LOCAL_URL": "http://ollama.test",
+        "INFERENCE_GEM_KIND": "gemini", "INFERENCE_GEM_URL": "https://gemini.test", "INFERENCE_GEM_API_KEY": "k",
+        "INFERENCE_OR_KIND": "openai", "INFERENCE_OR_URL": "https://openai.test/v1", "INFERENCE_OR_API_KEY": "k",
+        "INFERENCE_COM_KIND": "ollama", "INFERENCE_COM_URL": "https://ollama.com", "INFERENCE_COM_API_KEY": "k"}),
+        up.client())
+    settings = CallSettings(think="off", keep_alive=900)
+    assert router.holds_models("local:m") and await router.load("local:m", settings) is True
+    assert await router.in_memory("local:m") == {"local:m:latest": 16384}
+    for hosted in ("gem:gemini-x-flash", "or:x/y", "local:gpt-oss:120b-cloud", "local:kimi-k2:cloud",
+                   "com:gpt-oss:120b"):
+        assert router.holds_models(hosted) is False, hosted
+        assert await router.load(hosted, settings) is False, hosted
+        assert await router.in_memory(hosted) is None, hosted
+    assert [(r.url.host, r.method, r.url.path) for r in up.requests] == [
+        ("ollama.test", "POST", "/api/chat"), ("ollama.test", "GET", "/api/ps")]
+    await router.aclose()
+
+
+async def test_has_model_reads_the_list_and_raises_when_the_provider_cant_be_asked():
+    # The phone's refresher skips a model the provider no longer lists, as the gate does, but keeps its own outage
+    # accounting, so this check raises (and logs nothing) where is_listed fails open with a warning.
+    up = FakeUpstream().on("GET", "/api/tags", lambda: httpx.Response(200, json={"models": [{"name": "m"}]}))
+    router = Router(load_provider_configs({"OLLAMA_URL": "http://ollama.test"}), up.client())
+    assert await router.has_model("ollama:m") is True and await router.has_model("ollama:gone") is False
+    down = Router(load_provider_configs({"OLLAMA_URL": "http://ollama.test"}),
+                  FakeUpstream().on("GET", "/api/tags", httpx.ConnectError("down")).client())
+    with pytest.raises(ProviderUnavailable):
+        await down.has_model("ollama:m")
+    await router.aclose()
+    await down.aclose()

@@ -103,6 +103,16 @@ async def list_lines(conn) -> list[Line]:
     return [_line(r) for r in await cur.fetchall()]
 
 
+async def open_line_models(conn) -> list[str]:
+    """The model ids of the lines a call could reach now, each once, in order: switched on, with a project the line's
+    user is still a member of (the gate's own first checks, so a line the gate would close holds no model in memory).
+    What the phone's refresher keeps loaded (R17.1). One query."""
+    cur = await conn.execute(
+        "SELECT DISTINCT l.model_id FROM phone_lines l JOIN project_members m "
+        "ON m.project_id = l.project_id AND m.user_id = l.service_user_id WHERE l.enabled ORDER BY l.model_id")
+    return [row[0] for row in await cur.fetchall()]
+
+
 async def _attach(conn, principal, project_id: str, user_id: str) -> None:
     """Make the line's user a reader of the project. Publishing a project to anonymous callers needs a real
     maintainer or owner of it: an admin who isn't a member is refused (404), as chat refuses them the project's

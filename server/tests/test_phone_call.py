@@ -18,7 +18,8 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 from server.chat.store import Heard, TurnClaim
-from server.phone.call import CallDeps, CallSession, Hearing, Upsampler
+from server.llm.types import CallSettings
+from server.phone.call import CallDeps, CallSession, Hearing, Upsampler, model_keep_alive, phone_settings
 from server.phone.config import PhoneConfig
 from server.phone.media import Audio, Digit, HungUp
 from server.phone.segmenter import Misfire, Segmenter, SpeechEnded, SpeechStarted
@@ -378,6 +379,35 @@ def test_question_gets_an_answer():
     assert stat["first_audio_at"] == pytest.approx(c.starts("We open at nine."))
     assert stat["error"] is None
     assert c.outcome.end_reason == "caller" and c.outcome.turns == 2 and len(c.outcome.stats) == 2
+
+
+def test_every_turn_asks_to_keep_the_lines_model_loaded(monkeypatch):
+    # R17.4: a call's turns carry PHONE_MODEL_KEEP_ALIVE (15 min unless set) within INFERENCE_KEEP_ALIVE_MAX, clamped
+    # as the chat's own keep-alive is, so the call itself keeps the model loaded.
+    monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "10m")
+    c = call([*speech(1.0, 2.0), *speech(5.0, 6.0), (9.0, HungUp("caller"))],
+             heard=[words("What are your hours?"), words("And on Sunday?")],
+             turns=[[*says("We open at nine."), FINISH], [*says("We are closed on Sunday."), FINISH]])
+    assert [req.settings for req in c.chat.requests] == [CallSettings(think="off", keep_alive=600)] * 2
+
+
+def test_phone_settings_keep_the_model_loaded_within_the_deployments_limit(monkeypatch):
+    cfg = PhoneConfig(listen=None, allow=(), pbx_address=None)
+    monkeypatch.delenv("INFERENCE_KEEP_ALIVE_MAX", raising=False)            # the default limit: 30 min
+    assert phone_settings(cfg) == CallSettings(think="off", keep_alive=900)
+    assert phone_settings(dataclasses.replace(cfg, model_keep_alive_s=7200)).keep_alive == 1800
+    monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "10m")
+    assert phone_settings(cfg).keep_alive == 600
+    assert phone_settings(dataclasses.replace(cfg, model_keep_alive_s=-1)).keep_alive == 600   # "forever" is capped
+    monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "-1")                     # the deployment set no limit
+    assert phone_settings(dataclasses.replace(cfg, model_keep_alive_s=-1)).keep_alive == -1
+    off = dataclasses.replace(cfg, model_keep_alive_s=0)                     # PHONE_MODEL_KEEP_ALIVE=0: nothing is sent
+    assert phone_settings(off) == CallSettings(think="off") and model_keep_alive(off) is None
+    # R17.8 I1: a cap of 0 is "not kept" too. Sent, keep_alive 0 would unload the model after every answer.
+    monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "0")
+    for keep in (900, -1):
+        capped = dataclasses.replace(cfg, model_keep_alive_s=keep)
+        assert phone_settings(capped) == CallSettings(think="off") and model_keep_alive(capped) is None
 
 
 def test_words_before_a_tool_play_at_once():

@@ -137,6 +137,7 @@ the listener off (the log says why).
 | `PHONE_IDLE_S` | `30` | 1 to 600, **seconds** | Seconds of a silent caller before the assistant asks "Are you still there?". After a second period of silence it says goodbye and hangs up. |
 | `PHONE_CHECKING_S` | `4` | 0.5 to 60, **seconds** | How long a tool (a document search, say) may run before the caller hears one "Still checking" phrase. |
 | `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. With constant background sound at talking level, such as a television next to the phone, each of the first two stretches pauses the reply for up to this long; once both are judged noise the call is in **babble mode** and the reply plays on through the sound ([how, and what it costs](#troubleshooting)). Lowering it to 10–15 shortens that silent start. |
+| `PHONE_MODEL_KEEP_ALIVE` | `15m` | a duration (`15m`, `1h`, or **seconds**: `900`); `0` turns it off | How long Ollama keeps a line's model loaded after the phone last asked for it. While the listener is on the app asks again every 2 minutes, so the model of a line that is on stays loaded, and this is how long it lingers once the line is off or the backend stops. Capped by `INFERENCE_KEEP_ALIVE_MAX` (30 minutes by default). Under 4 minutes, after the cap, the refresher stays off ([The line's model stays loaded](#the-lines-model-stays-loaded)). A value that isn't a duration is logged and replaced by the default. |
 
 How the caller is *heard* is not repeated here. The voice-activity thresholds, the
 silence that ends a turn (700 ms), the pre-roll and the noise limits are the **speech
@@ -152,6 +153,93 @@ Australian). The console's **Voice** control lists what is available; an engine 
 was set up and later removed stays on the saved line, marked "not offered now", until
 you pick another. A phone call is narrowband (8 kHz), so voices that are good in the
 chat sound thinner here; listen to the welcome before you ship a line.
+
+## The line's model stays loaded
+
+Ollama unloads a model that has had no request for 5 minutes, and loading it again is
+slow: on a CPU-only machine gemma4:e4b took about 30 seconds from disk, and about 6 when
+the file was still in the page cache. A caller would hear the welcome, ask, and then wait
+that long for the first answer. So while the listener is on, the app keeps the models of
+its lines loaded:
+
+- **When the listener starts, and every 2 minutes after,** it asks Ollama to load the
+  model of each line that would take a call: on, still a member of its project, with a
+  model the deployment still offers and the server still lists. The request loads the
+  model without generating anything: no tokens, nothing against a budget, no chat. Lines
+  that share a model ask once.
+- **When a call is let in,** it asks for that line's model again, without waiting for the
+  answer. If the model had been pushed out, loading it overlaps the welcome and the
+  caller's first question instead of following them.
+- **Every turn of a call** carries the same keep-alive, so a call keeps its model loaded.
+
+A load asks for exactly what the call's turns will, the context size above all, because
+Ollama reloads a model when a request changes its options. Only a model on an Ollama you
+host gets a request. A hosted model gets none: Gemini, an OpenAI-compatible API, an Ollama
+cloud model (a name ending in `-cloud` or `:cloud`, even on your own server) and
+ollama.com. There is nothing to load there, and a request could cost money.
+
+**What it costs: the model's memory, all the time a line is on.** For example Ollama
+reports gemma4:e4b at about 2 GB (2,093,366,638 bytes, on a CPU-only machine) with the
+16,384-token context a phone turn uses by default (Ollama 0.40.13). `curl
+<OLLAMA_URL>/api/ps` shows what each loaded model holds on your machine. After the line is
+switched off, the model is freed `PHONE_MODEL_KEEP_ALIVE` after its last load or turn.
+
+**The keep-alive and its cap.** `PHONE_MODEL_KEEP_ALIVE` (15 minutes by default) is capped
+by `INFERENCE_KEEP_ALIVE_MAX` (30 minutes by default), the same ceiling a chat's own
+keep-alive has, so a deployment that frees models quickly still does. A model loaded at
+one refresh must still be loaded at the next, with time to spare, so a keep-alive under 4
+minutes after the cap leaves the refresher off, with a warning when the listener starts:
+calls still load their model as they connect, so the wait overlaps the welcome rather than
+going away. A cap of 0 (`INFERENCE_KEEP_ALIVE_MAX=0`, "unload after each use") means the
+lines' models aren't kept at all: no refresher (with a warning naming the cap), no load
+when a call connects, and no keep-alive on a call's turns, which would otherwise unload
+the model after every answer.
+
+**`PHONE_MODEL_KEEP_ALIVE=0` turns all of it off,** the load at connect included, and
+restores the behaviour from before this feature exactly: no loads, no keep-alive on a
+call's turns, and Ollama keeps the model as it would for any chat. It is the switch to
+reach for if the loading itself ever misbehaves.
+
+**It doesn't fight anyone for memory.** At each refresh the app looks at what Ollama holds
+(`/api/ps`) and, for each line's model:
+
+- **not loaded** (Ollama restarted, someone ran `ollama stop`, it crashed, or its own
+  keep-alive ran out): it loads it. Refreshing is for exactly that, so it never gives up;
+- **loaded at a different context size** than a phone turn's: someone else is using it at
+  their size (a chat whose Settings ask for another context size, say). The app leaves it
+  alone, and says so once in the log (`… is loaded at another context size …: it is left
+  alone`). The line's next call reloads it at its own size, which costs that call a
+  reload, overlapped by the welcome. The phone's size is the one it asks for, or the one
+  Ollama reported right after the phone's own load: an Ollama may report another number
+  than it was asked for (with `OLLAMA_NUM_PARALLEL` above 1, say), and the app never
+  mistakes its own copy for someone else's;
+- **loaded at the phone's size:** it asks again, which restarts the keep-alive.
+
+While **any call is live**, the refresher still refreshes every model already loaded at the
+phone's size (that only restarts its timer and takes no memory), but it loads a model that
+isn't in memory, or one whose server can't say, only if a live call uses it: loading
+another line's model then could push the live call's model out of memory. Those wait for a
+refresh with no call live.
+
+**When the models don't fit together.** If two lines that are on use different models that
+don't fit in memory at once, the refresh that loads both ends with one of them already
+gone, pushed out by the other. The app then stops refreshing the pushed one until the
+backend restarts, and logs one warning naming both (`Phone lines: model … was pushed out
+of memory by …, loaded in the same refresh`). That is the only thing that stops a
+refresh. What follows:
+
+- one model stays loaded and refreshed;
+- calls on the other line load their model as they connect (the welcome covers part of
+  the wait), which pushes the first one out for the length of the call;
+- the refresher waits for calls to end, then loads the first one again;
+- a restart of the backend tries both again.
+
+To keep both loaded, give Ollama the memory, or put the lines on one model.
+
+**When Ollama or the database is down,** the app logs one warning for the outage and keeps
+trying every 2 minutes; when it's back, it says nothing more. A model the server refuses (a
+404, say, for a model deleted from it) gets one warning of its own. A load never holds up
+or ends a call.
 
 ## Limits
 
@@ -300,7 +388,11 @@ speech engine (**Admin → Overview**) and the model.
 **It answers late.** First sound is the sum of the end-of-turn silence (700 ms), the
 recognizer, the model's first sentence and the voice's first clause. A model that is too
 slow for a phone is the usual cause; a smaller or hosted model, a faster voice (Chirp),
-and `SPEECH_WINDOW_SILENCE_MS` are the levers (the last is shared with Talk).
+and `SPEECH_WINDOW_SILENCE_MS` are the levers (the last is shared with Talk). If only the
+first answer of a call is late, by tens of seconds on a CPU-only machine, the model was
+loading: the log says why it wasn't kept loaded (`pushed out of memory`, `couldn't be
+loaded`, or `aren't kept loaded`, which names the setting that turned it off); see [The line's model stays
+loaded](#the-lines-model-stays-loaded).
 
 **A TV or a busy room beside the caller: babble mode.** Sound at talking level over the
 line counts as someone talking. So at first the app does what Talk does: when the sound

@@ -76,6 +76,23 @@ def test_max_utterance_s(caplog):
         assert "PHONE_MAX_UTTERANCE_S" in caplog.text, bad
 
 
+def test_model_keep_alive(caplog):
+    """R17.1: how long a line's model stays loaded after a load or a turn, in whole seconds, read like the app's other
+    keep-alive durations (inference_limits.seconds): 15 min unless set, 0 is off, a negative value is "forever"."""
+    assert load_phone_config({}).model_keep_alive_s == 900
+    for raw, seconds in (("15m", 900), ("1h", 3600), ("600", 600), ("90s", 90), ("2.5m", 150), ("0", 0),
+                         ("-1", -1), ("-5m", -1)):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert load_phone_config({"PHONE_MODEL_KEEP_ALIVE": raw}).model_keep_alive_s == seconds, raw
+        assert caplog.text == "", raw
+    for bad in ("forever", "10 minutes", "1d", "nan"):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert load_phone_config({"PHONE_MODEL_KEEP_ALIVE": bad}).model_keep_alive_s == 900
+        assert caplog.text.count("PHONE_MODEL_KEEP_ALIVE") == 1, bad
+
+
 def test_address_helpers():
     assert normalize_ip("::ffff:192.0.2.9") == "192.0.2.9"
     assert normalize_ip("2001:db8::1") == "2001:db8::1"

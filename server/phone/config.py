@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
+from ..services.inference_limits import seconds as duration_seconds
+
 logger = logging.getLogger(__name__)
 
 WILDCARD_HOSTS = ("0.0.0.0", "::")
@@ -25,6 +27,9 @@ class PhoneConfig:
     # seconds of unbroken caller sound heard as one clip; longer talk (or a TV, or hold music) is cut into clips this
     # long (R5.8). 30 s is Whisper's own window, and it bounds a call's hearing memory to about 2 MB.
     max_utterance_s: float = 30
+    # whole seconds Ollama keeps a line's model loaded after a load request or a turn (R17.1), within
+    # INFERENCE_KEEP_ALIVE_MAX; 0 = off (the phone sends no load request and no keep_alive); -1 = Ollama's "forever"
+    model_keep_alive_s: int = 900
 
 
 def normalize_ip(text: str) -> str | None:
@@ -75,6 +80,18 @@ def load_phone_config(env: Mapping[str, str]) -> PhoneConfig:
             return default
         return value
 
+    def duration(key: str, default: int) -> int:
+        """A duration read as the app reads its other keep-alive values (`inference_limits.seconds`: "15m", "1h",
+        "900"), in whole seconds; any negative value is Ollama's "forever", -1."""
+        raw = (env.get(key) or "").strip()
+        if not raw:
+            return default
+        value = duration_seconds(raw)
+        if value is None:
+            logger.warning("%s=%r is not a duration (like 15m or 900); using %ds", key, raw, default)
+            return default
+        return -1 if value < 0 else int(round(value))
+
     allow: list[str] = []
     for item in (env.get("PHONE_AUDIOSOCKET_ALLOW") or "").split(","):
         if not item.strip():
@@ -111,4 +128,5 @@ def load_phone_config(env: Mapping[str, str]) -> PhoneConfig:
         idle_s=num("PHONE_IDLE_S", d.idle_s, float, 1.0, 600.0),
         checking_s=num("PHONE_CHECKING_S", d.checking_s, float, 0.5, 60.0),
         max_utterance_s=num("PHONE_MAX_UTTERANCE_S", d.max_utterance_s, float, 5.0, 120.0),
+        model_keep_alive_s=duration("PHONE_MODEL_KEEP_ALIVE", d.model_keep_alive_s),
     )

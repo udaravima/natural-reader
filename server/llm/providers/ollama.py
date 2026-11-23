@@ -65,22 +65,55 @@ class OllamaProvider:
         self._models.put("models", names)
         return names
 
-    async def loaded_context_lengths(self) -> dict[str, int]:
-        """{model name: the context size it is loaded with now} from GET /api/ps. A model that isn't loaded
-        isn't listed, and Ollama picks its size at load time, so this is the only honest number for a local
-        model. Any failure is {}: the caller reports the size as unknown."""
+    async def _ps(self) -> list[dict] | None:
+        """The models loaded now, as GET /api/ps lists them; None on any failure (logged at debug only: its callers
+        are a status line and the phone's refresher, which carry on without it)."""
         try:
             resp = await self._client.get(f"{self.config.url}/api/ps", headers=auth_headers(self.config))
             if resp.status_code != 200:
                 logger.debug("Ollama /api/ps answered %s", resp.status_code)
-                return {}
+                return None
             models = json_object(resp).get("models") or []
         except Exception as e:  # noqa: BLE001 — a status line must never take the page down
             logger.debug("Ollama /api/ps failed: %s", type(e).__name__)
-            return {}
-        return {m["name"]: m["context_length"] for m in models
-                if isinstance(m, dict) and m.get("name") and isinstance(m.get("context_length"), int)
+            return None
+        return [m for m in models if isinstance(m, dict)] if isinstance(models, list) else None
+
+    async def loaded_context_lengths(self) -> dict[str, int]:
+        """{model name: the context size it is loaded with now} from GET /api/ps. A model that isn't loaded
+        isn't listed, and Ollama picks its size at load time, so this is the only honest number for a local
+        model. Any failure is {}: the caller reports the size as unknown."""
+        return {m["name"]: m["context_length"] for m in await self._ps() or []
+                if m.get("name") and isinstance(m.get("context_length"), int)
                 and not isinstance(m["context_length"], bool)}
+
+    async def in_memory(self) -> dict[str, int | None] | None:
+        """The models loaded now (GET /api/ps), as {name: the context size it is loaded with, None when not
+        reported}; None when Ollama can't say."""
+        models = await self._ps()
+        if models is None:
+            return None
+        return {m["name"]: m["context_length"] if isinstance(m.get("context_length"), int)
+                and not isinstance(m["context_length"], bool) else None
+                for m in models if isinstance(m.get("name"), str) and m["name"]}
+
+    async def load(self, model: str, settings: CallSettings) -> bool:
+        """Load `model` into memory without generating anything. Ollama's own way is a chat request with no messages,
+        answered once the model is loaded (done_reason "load"). The body is a turn's (`_body`), so the model, its
+        options and the keep-alive are exactly what a turn with `settings` sends: Ollama reloads a model whose options
+        change, `num_ctx` above all (R17.2). Thinking isn't sent: it doesn't change how a model is loaded, and
+        leaving it out asks /api/show nothing. True once loaded; raises as a turn would when Ollama can't be reached
+        or refuses (an unknown model is a 404)."""
+        body = self._body(model, [], [], settings, None)
+        body["stream"] = False
+        try:
+            resp = await self._client.post(f"{self.config.url}/api/chat", json=body,
+                                           headers=auth_headers(self.config))
+        except httpx.HTTPError as e:
+            raise ProviderUnavailable(type(e).__name__) from e
+        if resp.status_code != 200:
+            raise provider_error(resp.status_code, resp.content)
+        return True
 
     async def capabilities(self, model: str) -> Capabilities:
         return self._features.apply(model, await self._shown_capabilities(model))

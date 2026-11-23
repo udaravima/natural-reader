@@ -8,7 +8,7 @@ import pytest
 from server.auth.users import SEED_ADMIN_ID
 from server.llm.providers.base import ProviderConfig
 from server.llm.router import ModelInfo
-from server.llm.types import Capabilities
+from server.llm.types import CallSettings, Capabilities
 from server.services import console_settings, model_settings
 from server.services.inference_limits import InferenceLimits
 from server.tests.chat_harness import FakeRouter
@@ -78,6 +78,21 @@ def test_a_non_local_model_ignores_the_deployment_sizes():
     lim = InferenceLimits(num_ctx_max=None, keep_alive_max_s=None)
     ms = replace(model_settings.from_env({}), context_size=8192, context_sizes={"ollama:x": 12288})
     assert model_settings.num_ctx_for(ms, "ollama:x", local=False, user_value=None, limits=lim) is None
+
+
+def test_sized_settings_are_a_turns_settings_with_its_context_size():
+    # One place sizes a turn's context, for the chat turn and the phone's load request alike (R17.2): Ollama reloads
+    # a model whose num_ctx changes, so a load that sized it differently from the call's turns would cost a reload.
+    lim = InferenceLimits(num_ctx_max=32768, keep_alive_max_s=None)
+    unset = model_settings.from_env({})
+    asked = CallSettings(think="off", keep_alive=900)
+    local = FakeRouter()
+    assert model_settings.sized_settings(unset, local, "ollama:gemma4:e4b", asked, lim) == CallSettings(
+        think="off", keep_alive=900, num_ctx=16384)
+    own = replace(unset, context_sizes={"ollama:gemma4:e4b": 8192})
+    assert model_settings.sized_settings(own, local, "gemma4:e4b", asked, lim).num_ctx == 8192    # by its canonical id
+    hosted = FakeRouter(kind="gemini", provider_name="gemini", url="https://gemini.example.com")
+    assert model_settings.sized_settings(unset, hosted, "gemini:gemini-x-flash", asked, lim) == asked
 
 
 def test_deployment_num_ctx_says_where_the_number_came_from():

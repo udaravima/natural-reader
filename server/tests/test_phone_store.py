@@ -262,3 +262,20 @@ async def test_logs_hold_ids_not_the_greeting(db_conn, world, caplog):
     line = await _line(db_conn, world)
     await store.open_call(db_conn, line, session_id="c", now_ms=1)
     assert caplog.records and GREETING not in caplog.text
+
+
+async def test_open_line_models_are_the_models_a_call_could_reach(db_conn, world):
+    # R17.1: the models the refresher keeps loaded. A line counts when it is on and its user is still a member of its
+    # project (the gate's own first checks, so a line the gate closes holds no memory); each model once, in order.
+    async def on(model, project=world["project"]):
+        line = await _line(db_conn, world, model_id=model, project_id=project)
+        return await store.update_line(db_conn, world["owner"], line.id, enabled=True)
+    await on("ollama:qwen3:8b")
+    await on("ollama:gemma4:e4b")
+    await on("ollama:gemma4:e4b")
+    await _line(db_conn, world, model_id="ollama:never-on")
+    revoked = await on("ollama:revoked")
+    await db_conn.execute("DELETE FROM project_members WHERE user_id = %s", (revoked.service_user_id,))
+    await on("ollama:project-gone", project=world["other"])
+    await db_conn.execute("DELETE FROM projects WHERE id = %s", (world["other"],))
+    assert await store.open_line_models(db_conn) == ["ollama:gemma4:e4b", "ollama:qwen3:8b"]

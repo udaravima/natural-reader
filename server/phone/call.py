@@ -52,6 +52,7 @@ from scipy.signal import firwin, lfilter
 from server.chat.orchestrator import TurnRequest
 from server.chat.store import Heard, TurnClaim
 from server.llm.types import CallSettings
+from server.services import inference_limits
 from server.speech.base import Transcript
 
 from .config import PhoneConfig
@@ -108,6 +109,23 @@ class Hearing:
         for probability, window in self._vad.push_windows(self._up.push(pcm)):
             events += self._segmenter.step(probability, window)
         return events
+
+
+def model_keep_alive(cfg: PhoneConfig) -> int | None:
+    """Seconds Ollama keeps a line's model loaded after a load request or a turn (R17.1, R17.4):
+    PHONE_MODEL_KEEP_ALIVE within INFERENCE_KEEP_ALIVE_MAX, clamped as the chat's own keep-alive is (so "forever" is
+    the limit, unless the deployment set none). None when PHONE_MODEL_KEEP_ALIVE is 0, and when the cap is 0 (R17.8):
+    the phone then sends no keep-alive and no load request, and the model is kept as any chat's would be. Never 0,
+    which Ollama reads as "unload after every answer"."""
+    keep = inference_limits.clamp(None, cfg.model_keep_alive_s, inference_limits.get_limits())[1]
+    return None if keep == 0 else keep
+
+
+def phone_settings(cfg: PhoneConfig) -> CallSettings:
+    """What every turn of a call asks of the model, before the chat engine sizes its context
+    (`model_settings.sized_settings`). A line's load request starts from the same settings and is sized the same
+    way, so loading the model never changes an option that makes Ollama reload it for a turn (R17.2)."""
+    return CallSettings(think="off", keep_alive=model_keep_alive(cfg))
 
 
 @dataclass
@@ -556,7 +574,7 @@ class CallSession:
         """Claim, read the model's events, voice the sentences; returns when the last sentence is in the pacer."""
         line = self._line
         req = TurnRequest(user_id=line.service_user_id, session_id=self._session_id, model_id=line.model_id,
-                          text=turn.text, attachments=(), settings=CallSettings(think="off"), doc_id=None,
+                          text=turn.text, attachments=(), settings=phone_settings(self._deps.cfg), doc_id=None,
                           timezone=None, project_id=line.project_id, spoken=True, channel="phone",
                           profile_id=line.profile_id)
         pieces: asyncio.Queue[Piece | None] = asyncio.Queue()

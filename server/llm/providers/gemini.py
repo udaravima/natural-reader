@@ -141,6 +141,13 @@ class GeminiProvider:
             names.append(name)
         return names
 
+    async def load(self, model: str, settings: CallSettings) -> bool:
+        """A hosted API has nothing to load, and a request could cost money: nothing is sent."""
+        return False
+
+    async def in_memory(self) -> dict[str, int | None] | None:
+        return None
+
     async def capabilities(self, model: str) -> Capabilities:
         try:
             entry = (await self._entries()).get(model) or {}

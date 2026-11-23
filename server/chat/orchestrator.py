@@ -275,13 +275,12 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         options = await _chat_options()
         # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
         # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
-        # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed.
+        # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed. A phone line's load
+        # request is sized by the same function, so loading its model never makes a call's turn reload it (R17.2).
         models_cfg = await _models_settings()
         provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
         model_key = f"{provider.config.name}:{model_name}"
-        sized = model_settings.sizes_context(provider.config, model_name)
-        settings = replace(req.settings, num_ctx=model_settings.num_ctx_for(
-            models_cfg, model_key, local=sized, user_value=req.settings.num_ctx, limits=get_limits()))
+        settings = model_settings.sized_settings(models_cfg, router, req.model_id, req.settings, get_limits())
         # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
         # nothing visible left is no approval (chat/web_consent.py).
         web_query = clean_query(req.web_query) if req.web_query else None

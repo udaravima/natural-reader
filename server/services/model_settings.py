@@ -30,12 +30,13 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, TypeVar
 from urllib.parse import urlsplit
 
 from ..chat.reader import reader_model_source
 from ..llm.providers.base import ProviderConfig
+from ..llm.types import CallSettings
 from . import console_settings
 from .console_settings import Section, Setting
 from .inference_limits import InferenceLimits, clamp, load_inference_limits
@@ -387,6 +388,17 @@ def num_ctx_for(ms: ModelsSettings, model_id: str, *, local: bool, user_value: i
     if size is not None:
         return size
     return clamp(user_value if user_value is not None else DEFAULT_LOCAL_NUM_CTX, None, limits)[0]
+
+
+def sized_settings(ms: ModelsSettings, router: Any, model_id: str, settings: CallSettings,
+                   limits: InferenceLimits) -> CallSettings:
+    """`settings` with the context size a turn's requests to `model_id` send (`num_ctx_for`, the person's own value
+    being `settings.num_ctx`). A chat turn sizes its settings here, and so does a phone line's load request (R17.2):
+    Ollama reloads a model whose `num_ctx` changes, so a load must ask for the size the call's turns will."""
+    provider, name = router.resolve(model_id)
+    return replace(settings, num_ctx=num_ctx_for(ms, f"{provider.config.name}:{name}",
+                                                 local=sizes_context(provider.config, name),
+                                                 user_value=settings.num_ctx, limits=limits))
 
 
 # ---------- windows and the model list ----------

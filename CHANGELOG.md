@@ -16,8 +16,9 @@ All notable changes to this project will be documented in this file.
   with how long it lasted and how long the first sound took. The listener is off
   until `PHONE_AUDIOSOCKET_LISTEN` is set, only the peers in
   `PHONE_AUDIOSOCKET_ALLOW` may connect, and the knobs are `PHONE_PBX_ADDRESS`,
-  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`, `PHONE_CHECKING_S` and
-  `PHONE_MAX_UTTERANCE_S`. Each line has a longest call, a calls-at-once cap and
+  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`, `PHONE_CHECKING_S`,
+  `PHONE_MAX_UTTERANCE_S` and `PHONE_MODEL_KEEP_ALIVE`. Each line has a longest
+  call, a calls-at-once cap and
   a daily token budget; a project is attached only by a maintainer or owner, and
   removing the line from its members closes the line. Phase 1 is English only,
   and the app sends nothing to Asterisk: the admin pastes the lines in.
@@ -43,6 +44,28 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **A phone line's first answer no longer waits for its model to load.** Ollama
+  unloads a model after 5 idle minutes, and phone turns asked it to keep none,
+  so the first caller after a quiet spell waited for the model to load again
+  (about 30 s for gemma4:e4b on a CPU-only machine). Now the model is
+  loaded when the phone listener starts and kept loaded while the line is on:
+  the app asks Ollama again every 2 minutes, each call asks as it connects
+  (without waiting), and every turn of a call carries the same keep-alive. The
+  request loads the model without generating anything, with the same context
+  size as the call's turns, so the first answer never reloads it. The cost is
+  the model's memory while a line is on (about 2 GB for gemma4:e4b).
+  `PHONE_MODEL_KEEP_ALIVE` (default 15 minutes, capped by
+  `INFERENCE_KEEP_ALIVE_MAX`) is how long it stays after the line is off; `0`
+  turns this off and restores the old behaviour exactly, and a cap of 0 keeps
+  nothing. Only a model on an Ollama you host is loaded: Gemini, OpenAI-compatible
+  APIs, Ollama cloud models (`-cloud`, `:cloud`) and ollama.com get no request.
+  It doesn't fight for memory: a model someone loaded at another context size
+  is left alone; while a call lasts, a model that isn't in memory is loaded
+  only if a live call uses it (models already loaded keep being refreshed); and
+  if the lines' models don't fit in memory together, the one pushed out by the
+  other is no longer refreshed (its calls load it as they connect) until the
+  backend restarts. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#the-lines-model-stays-loaded).
 - **Most file names, web addresses and underscores are read the way they're
   written.** Chat read-aloud, Talk and phone calls say "dot" in file names and
   web addresses (`Architecture.md` is "Architecture dot md", `example.com` is
