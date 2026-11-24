@@ -31,6 +31,7 @@ from server.tests.chat_harness import FakeRouter, assert_fixture, member, reply,
 from server.tests.test_chat_extract import by_label
 from server.tests.test_chat_project_scope import A2, B, _project_turn, _search_step
 from server.tests.test_chat_web import PAGE, hit, url, use_router, web  # noqa: F401 — web and use_router are fixtures
+from server.tests.test_project_map import _mapped_project
 
 
 @pytest.fixture
@@ -136,6 +137,47 @@ async def test_phone_turn_offers_no_web_tools(conn, web_auto):
     sent = router.calls[0]
     assert "web_search" not in sent["tools"] and "read_web_pages" not in sent["tools"]
     assert PHONE_RULE in sent["messages"][0].content
+
+
+async def _rows_written(conn, user_id: str, session_id: str) -> tuple:
+    """What a turn leaves behind for `user_id` in `session_id`: its messages, its log, the usage charged, and the
+    profile the chat was given."""
+    return (await _one(conn, "SELECT count(*) FROM chat_messages WHERE session_id = %s", (session_id,)),
+            await _one(conn, "SELECT count(*) FROM chat_events WHERE session_id = %s", (session_id,)),
+            await _one(conn, "SELECT count(*), coalesce(sum(prompt_tokens), 0) FROM inference_usage WHERE user_id = %s",
+                       (user_id,)),
+            await _one(conn, "SELECT profile_id FROM chat_sessions WHERE id = %s", (session_id,)))
+
+
+async def test_first_request_is_what_the_first_step_sends_and_stores_nothing(db_conn, monkeypatch):
+    """R19.2: a phone line reads its prompt ahead of the call's first question, so a provider that caches prompts by
+    prefix (Ollama) has it ready. That only works if the request it reads is the first step's own, so
+    first_request is built by run_turn's code: here a call's first question, on a project whose map was shortened,
+    gets exactly the system message, tools and settings first_request gave before it. first_request leaves out the
+    caller's words (the user message is only the phone's note) and only reads: no message, log line, usage or
+    profile is written for it."""
+    for name in ("INFERENCE_LOCAL_NUM_CTX", "INFERENCE_NUM_CTX_MAX"):
+        monkeypatch.delenv(name, raising=False)              # the default context size for a self-hosted model
+    alice, pid = await _mapped_project(db_conn, monkeypatch, headings=120)
+    cfg = ChatConfig(project_map_chars=500)
+    question = "When is the Alpha rollout?"
+    claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text=question,
+                                   attachments=[], new_session_pins=None, scope_project_id=pid)
+    req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text=question, attachments=(),
+                      settings=CallSettings(think="off", keep_alive=900), doc_id=None, timezone=None, project_id=pid,
+                      spoken=True, channel="phone")
+    router = FakeRouter()
+    before = await _rows_written(db_conn, alice.user_id, "s-1")
+    first = await orchestrator.first_request(req, router=router, cfg=cfg)
+    assert await _rows_written(db_conn, alice.user_id, "s-1") == before and router.calls == []
+    assert [m.role for m in first.messages] == ["system", "user"]
+    assert first.messages[1].content == f"({ctx_mod.LOOK_IT_UP_NOTE})"         # no words of the caller's
+    _ = [e async for e in run_turn(req, claim, router=router, cfg=cfg, deployment_budget=None)]
+    sent = router.calls[0]
+    assert first.messages[0] == sent["messages"][0]
+    assert first.tools == sent["specs"] and [t.name for t in first.tools] == ["search_documents", "current_time"]
+    assert first.settings == sent["settings"] and first.settings.num_ctx == 16384
+    assert question in sent["messages"][1].content
 
 
 async def test_one_tool_round_then_answer(conn, monkeypatch, web_auto):

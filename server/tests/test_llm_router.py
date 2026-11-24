@@ -270,6 +270,30 @@ async def test_load_and_in_memory_reach_only_a_self_hosted_ollama():
     await router.aclose()
 
 
+async def test_read_prompt_reaches_only_a_self_hosted_ollama():
+    # R19.2: a phone line reads its prompt ahead of the first turn only where a server the deployer hosts can cache
+    # it. A hosted API gets no request: it caches nothing for us, and a request there may cost money.
+    up = (FakeUpstream()
+          .on("POST", "/api/show", lambda: httpx.Response(200, json={"capabilities": ["completion", "tools"]}))
+          .on("POST", "/api/chat", lambda: httpx.Response(200, json={"done": True, "done_reason": "length"})))
+    router = Router(load_provider_configs({
+        "INFERENCE_PROVIDERS": "local,gem,or,com",
+        "INFERENCE_LOCAL_KIND": "ollama", "INFERENCE_LOCAL_URL": "http://ollama.test",
+        "INFERENCE_GEM_KIND": "gemini", "INFERENCE_GEM_URL": "https://gemini.test", "INFERENCE_GEM_API_KEY": "k",
+        "INFERENCE_OR_KIND": "openai", "INFERENCE_OR_URL": "https://openai.test/v1", "INFERENCE_OR_API_KEY": "k",
+        "INFERENCE_COM_KIND": "ollama", "INFERENCE_COM_URL": "https://ollama.com", "INFERENCE_COM_API_KEY": "k"}),
+        up.client())
+    settings = CallSettings(think="off", num_ctx=16384, keep_alive=900)
+    prefix = [Message("system", "rules"), Message("user", "(note)")]
+    assert await router.read_prompt("local:m", prefix, [], settings) is True
+    for hosted in ("gem:gemini-x-flash", "or:x/y", "local:gpt-oss:120b-cloud", "local:kimi-k2:cloud",
+                   "com:gpt-oss:120b"):
+        assert await router.read_prompt(hosted, prefix, [], settings) is False, hosted
+    assert [(r.url.host, r.method, r.url.path) for r in up.requests] == [
+        ("ollama.test", "POST", "/api/show"), ("ollama.test", "POST", "/api/chat")]
+    await router.aclose()
+
+
 async def test_has_model_reads_the_list_and_raises_when_the_provider_cant_be_asked():
     # The phone's refresher skips a model the provider no longer lists, as the gate does, but keeps its own outage
     # accounting, so this check raises (and logs nothing) where is_listed fails open with a warning.

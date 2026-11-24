@@ -108,6 +108,19 @@ def available_tools(ctx: ToolContext) -> list[Tool]:
     return [t for t in REGISTRY if t.available(ctx)]
 
 
+# What a phone call may be offered (R19.1): the search and the clock ("are you open right now?"). The tools' descriptions
+# were about half a line's prompt (1,027 of 2,145 tokens), and a call's first answer reads the whole prompt, at about
+# 88 tokens/s on a CPU-only machine. A caller has no use for page reads, batch extraction or a full outline, and the app
+# already searches before every phone turn (chat/context.py, R18.1).
+PHONE_TOOLS = frozenset({"search_documents", "current_time"})
+
+
+def offered_on(channel: str, name: str) -> bool:
+    """Whether a turn on `channel` may be offered the tool `name`: a phone call only PHONE_TOOLS; the web chat and Talk
+    every tool."""
+    return channel != "phone" or name in PHONE_TOOLS
+
+
 def tool_spec(tool: Tool, ctx: ToolContext) -> ToolSpec:
     """The spec the model gets for `tool` this turn: a project chat's own wording when the tool has one (it
     reaches every searchable document of the project, named by the map's number or name), else the one spec.

@@ -57,6 +57,20 @@ All notable changes to this project will be documented in this file.
   model reads them. `CHAT_PREFETCH=off` turns the search off for phone lines
   too; in the chat, `auto` is unchanged. See
   [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#how-a-line-finds-its-answers).
+- **A phone call's first answer comes much sooner.** The first question of a call
+  whose prompt the model hadn't read yet (the first call after the model loads, or
+  the first of the day) waited while it read the line's whole prompt: about 2,150
+  tokens, 25 to 32 seconds on a CPU-only machine. Now a call offers the model only
+  the document search and the clock. The page-reading and extraction tools,
+  which a caller never needs, took 586 of those tokens, about 640 with the
+  rules' sentences about them (the outline tool is dropped too). And the
+  line's prompt is read while the welcome plays, so the first answer reads only
+  the caller's words and the search. Measured with the question sent 9 seconds
+  into the call, the model's first words came 9 to 11 seconds after it, instead of
+  25 to 32. The read is thrown away and charges no budget; it follows
+  `PHONE_MODEL_KEEP_ALIVE` (`0` turns it off), and only a model on an Ollama you
+  host gets one. The chat and Talk are unchanged. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#a-calls-first-answer).
 - **A phone line's first answer no longer waits for its model to load.** Ollama
   unloads a model after 5 idle minutes, and phone turns asked it to keep none,
   so the first caller after a quiet spell waited for the model to load again

@@ -188,6 +188,18 @@ class Router:
         provider, name = self.resolve(model_id)
         return await provider.load(name, settings)
 
+    async def read_prompt(self, model_id: str, messages: list[Message], tools: list[ToolSpec],
+                          settings: CallSettings) -> bool:
+        """Have the server that serves `model_id` read `messages` and `tools` into its prompt cache now, as a turn
+        sending `settings` would send them, generating at most one token, which is thrown away: the turn that then
+        starts with them reads only what follows. True once read; False, with no request sent, for a model that isn't
+        self-hosted (`holds_models`): a hosted API caches nothing for us, and a request could cost money. Raises as
+        `stream_chat` does. Nothing is billed or recorded: it is no turn."""
+        if not self.holds_models(model_id):
+            return False
+        provider, name = self.resolve(model_id)
+        return await provider.read_prompt(name, messages, tools, settings)
+
     async def in_memory(self, model_id: str) -> dict[str, int | None] | None:
         """The models the server that serves `model_id` holds in memory now, as {canonical id: the context size it
         is loaded with (None when not reported)}; None, with no request sent, for a model that isn't self-hosted,

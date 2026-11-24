@@ -129,6 +129,15 @@ def phone_settings(cfg: PhoneConfig) -> CallSettings:
     return CallSettings(think="off", keep_alive=model_keep_alive(cfg))
 
 
+def turn_request(line: Line, session_id: str, cfg: PhoneConfig, text: str) -> TurnRequest:
+    """What a call asks the chat engine for each turn: the caller's `text`, answered by the line's model, user, project
+    and profile, spoken and on the phone channel. The read of the line's prompt as a call connects (R19.2) is built
+    from the same request, so its prompt is the first turn's up to the caller's message."""
+    return TurnRequest(user_id=line.service_user_id, session_id=session_id, model_id=line.model_id, text=text,
+                       attachments=(), settings=phone_settings(cfg), doc_id=None, timezone=None,
+                       project_id=line.project_id, spoken=True, channel="phone", profile_id=line.profile_id)
+
+
 @dataclass
 class CallDeps:
     """What a call uses from the rest of the app; tests pass fakes."""
@@ -573,11 +582,7 @@ class CallSession:
 
     async def _produce(self, turn: _Turn) -> None:
         """Claim, read the model's events, voice the sentences; returns when the last sentence is in the pacer."""
-        line = self._line
-        req = TurnRequest(user_id=line.service_user_id, session_id=self._session_id, model_id=line.model_id,
-                          text=turn.text, attachments=(), settings=phone_settings(self._deps.cfg), doc_id=None,
-                          timezone=None, project_id=line.project_id, spoken=True, channel="phone",
-                          profile_id=line.profile_id)
+        req = turn_request(self._line, self._session_id, self._deps.cfg, turn.text)
         pieces: asyncio.Queue[Piece | None] = asyncio.Queue()
         voice = asyncio.create_task(self._voice(turn, pieces))
         try:

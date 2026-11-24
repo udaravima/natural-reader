@@ -30,11 +30,14 @@ A call is ended from outside only through its media's `hang_up()`, which leads t
 `run()` task is never cancelled.
 
 While the listener is on, the open lines' models stay loaded (R17.1 to R17.6), so a first answer never waits for a
-model to load: a refresher loads each one when the listener starts and every REFRESH_S after, and each call let in
-starts the same load for its line without waiting for it. A load asks for what the call's turns will (the keep-alive
-PHONE_MODEL_KEEP_ALIVE within INFERENCE_KEEP_ALIVE_MAX, and the turn's own context size), so it never makes Ollama
-reload the model for a turn. Only a self-hosted model is loaded: a hosted one (Gemini, an OpenAI-compatible API, an
-Ollama cloud model, ollama.com) gets no request. The refresher doesn't fight (R17.8, R17.9, `_refresh`): a model
+model to load: a refresher loads each one when the listener starts and every REFRESH_S after. Each call let in starts,
+without waiting for it, a read of its line's prompt (R19.2): the system message and the tools of the first turn,
+built by the chat engine's own code, which the server reads into its cache (loading the model if it must) while the
+welcome plays, so the first answer reads only the caller's words and what follows. The call's end gives the read up.
+Loads and reads ask for what the call's turns will (the keep-alive PHONE_MODEL_KEEP_ALIVE within
+INFERENCE_KEEP_ALIVE_MAX, and the turn's own context size), so they never make Ollama reload the model for a turn.
+Only a self-hosted model is loaded or read: a hosted one (Gemini, an OpenAI-compatible API, an Ollama cloud model,
+ollama.com) gets no request. The refresher doesn't fight (R17.8, R17.9, `_refresh`): a model
 loaded at someone else's context size is left alone; while a call is live, a model that isn't in memory is loaded
 only if a live call uses it (a model already loaded at the phone's size is still refreshed); and a model pushed out
 by a sibling in the same refresh (the lines' models don't fit together) isn't refreshed again until the listener
@@ -51,6 +54,7 @@ import os
 import secrets
 import string
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import psycopg
@@ -59,13 +63,13 @@ from .. import db
 from ..auth.authz import project_role
 from ..chat import store as chat_store
 from ..chat.config import get_chat_config
-from ..chat.orchestrator import run_turn
+from ..chat.orchestrator import first_request, run_turn
 from ..llm.router import get_router
 from ..llm.types import CallSettings, ProviderError, ProviderTimeout, ProviderUnavailable
 from ..services import chat_options, inference_budget, inference_limits, model_router, model_settings
 from ..speech import service as speech_service, window
 from . import audiosocket, store, vad, voice
-from .call import CallDeps, CallOutcome, CallSession, Hearing, model_keep_alive, phone_settings
+from .call import CallDeps, CallOutcome, CallSession, Hearing, model_keep_alive, phone_settings, turn_request
 from .clips import ClipCache
 from .config import PhoneConfig, load_phone_config, split_listen
 from .media import CallMedia
@@ -181,7 +185,6 @@ class _Gate:
     clips: dict | None = None
     options: chat_options.ChatOptions | None = None
     budget: int | None = None          # the deployment's daily token budget, as post_turn passes it
-    models: model_settings.ModelsSettings | None = None   # the console's model settings, read with the rest
 
 
 class PhoneService:
@@ -203,6 +206,7 @@ class PhoneService:
         self._refresh_sleep = refresh_sleep
         self._refreshing: asyncio.Task | None = None   # the refresher, started with the listener
         self._loading: dict[str, asyncio.Task] = {}   # canonical model id -> its load request in flight
+        self._reading: set[asyncio.Task] = set()       # the calls' reads of their line's prompt still running (R19.2)
         self._call_models: Counter[str] = Counter()    # the model ids of the calls let in, while they last
         self._unkept: set[str] = set()                 # pushed out by a sibling: not refreshed until restart
         self._ours: dict[str, int] = {}                # model -> the size /api/ps reported after the phone's load
@@ -420,58 +424,113 @@ class PhoneService:
         Its outcome is noted by `_loaded`; stop() cancels one still running."""
         task = self._loading.get(model)
         if task is None:
-            task = asyncio.ensure_future(self._load_and_note(router, model, settings))
+            task = asyncio.ensure_future(self._load_and_note(router, model, lambda: router.load(model, settings)))
             self._loading[model] = task
             task.add_done_callback(lambda done: self._loaded(model, done))
         return task
 
-    async def _load_and_note(self, router, model: str, settings: CallSettings) -> bool:
-        """The load, then the context size /api/ps reports for the model right after it. From then on that size is
+    async def _load_and_note(self, router, model: str, load: Callable[[], Awaitable[bool]]) -> bool:
+        """`load()`, then the context size /api/ps reports for the model right after it. From then on that size is
         the phone's own for rule (b) (R17.9): Ollama may report another size than the `num_ctx` asked (with
         OLLAMA_NUM_PARALLEL above 1, for example), and the phone must never take its own copy for someone else's.
-        Every phone load comes here, the refresher's and a call's alike. Returns the load's own answer."""
-        loaded = await router.load(model, settings)
+        Every phone load comes here: the refresher's, and a call's read of its line's prompt, which loads the model
+        too. Returns the load's own answer."""
+        loaded = await load()
         if loaded:
             size = _size_in_memory((await self._held(router, [model])).get(_provider(model)), model)
             if size is not None:
                 self._ours[model] = size
         return loaded
 
+    def _first_failure(self, model: str, exc: BaseException | None) -> bool:
+        """R17.6, R17.8: one warning per outage and a silent recovery, for the refresher's loads and the calls' reads
+        alike. A server that can't be reached is an outage of its provider (its name is the id's prefix), whatever
+        model hit it first; anything else (a model the server refuses, a 404, say; the database during a read) is that
+        model's alone, so another model loading fine doesn't make it warn again. Returns whether `exc` begins an outage
+        (the caller warns); a success (None) ends any outage of the model and its provider."""
+        provider = _provider(model)
+        if exc is None:
+            self._failing -= {provider, model}
+            return False
+        key = provider if isinstance(exc, _UNREACHABLE) else model
+        if key in self._failing:
+            return False
+        self._failing.add(key)
+        return True
+
     def _loaded(self, model: str, task: asyncio.Task) -> None:
-        """R17.6, R17.8: one warning per outage and a silent recovery. A server that can't be reached is an outage of
-        its provider (its name is the id's prefix), whatever model hit it first; a model the server refuses (a 404,
-        say) is that model's alone, so another model loading fine doesn't make it warn again. Reading the exception
-        here also keeps one nobody awaited from being reported as never retrieved."""
+        """A load's end. Reading the exception here also keeps one nobody awaited from being reported as never
+        retrieved."""
         if self._loading.get(model) is task:
             del self._loading[model]
         if task.cancelled():
             return
-        provider, exc = _provider(model), task.exception()
-        if exc is None:
-            self._failing -= {provider, model}
-            return
-        key = provider if isinstance(exc, _UNREACHABLE) else model
-        if key not in self._failing:
-            self._failing.add(key)
+        exc = task.exception()
+        if self._first_failure(model, exc):
             logger.warning("Phone lines: model %s couldn't be loaded (%s); the refresher keeps trying, and a call "
                            "loads it as the call connects", model, type(exc).__name__,
                            exc_info=None if isinstance(exc, _LOAD_OUTAGES) else exc)
 
-    def _warm_model(self, gate: _Gate) -> None:
-        """R17.3: start loading the line's model as its call is let in, and never wait for it, so a reload after an
-        eviction overlaps the greeting and the caller's first question. A load already running for the model is
-        joined. It may outlive the call; stop() cancels it. Nothing here may delay, fail or end the call."""
+    def _read_ahead(self, gate: _Gate, session_id: str) -> asyncio.Task | None:
+        """R19.2: as a call is let in, have the model's server read the line's prompt (the system message and the
+        tools, exactly as the call's first turn will send them) while the welcome plays and the caller asks. Read
+        cold, a line's prompt (about 1,300 tokens before the caller's words) took about 15 s on a CPU-only machine;
+        the first turn then reads only what follows it.
+        The read loads the model too (R17.3), with the turn's own options, and asks for one token, thrown away.
+
+        Same gates as a load: nothing when the keep-alive is off (PHONE_MODEL_KEEP_ALIVE=0, or a cap of 0), and
+        nothing for a model that isn't self-hosted. It is never awaited here and never delays, fails or ends the call;
+        the call's end gives it up (`_give_up`), and so does stop(). Each call reads its own: two lines on one model
+        have different prompts. Returns the read's task, or None."""
         cfg, line = self._config(), gate.line
         if model_keep_alive(cfg) is None:
-            return
+            return None
         try:
             router = _router()
-            settings = model_settings.sized_settings(gate.models, router, line.model_id, phone_settings(cfg),
-                                                     inference_limits.get_limits())
-            self._load(router, router.canonical_id(line.model_id), settings)
+            if not router.holds_models(line.model_id):
+                return None
+            model = router.canonical_id(line.model_id)
         except Exception as exc:  # noqa: BLE001 — the call goes on without it
-            logger.warning("phone line %s: its model wasn't loaded as the call connected (%s)", line.id,
+            logger.warning("phone line %s: its prompt wasn't read ahead of the first question (%s)", line.id,
                            type(exc).__name__, exc_info=None if isinstance(exc, _OUTAGES) else exc)
+            return None
+        req = turn_request(line, session_id, cfg, "")
+        task = asyncio.ensure_future(self._load_and_note(router, model, lambda: self._read_prompt(router, req)))
+        self._reading.add(task)
+        task.add_done_callback(lambda done: self._read(model, line.id, done))
+        return task
+
+    @staticmethod
+    async def _read_prompt(router, req) -> bool:
+        """The read itself: the first turn's request built by the chat engine's own code, with no words yet
+        (`first_request`), sent through the LLM layer, which generates one token and throws it away."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        first = await first_request(req, router=router, cfg=get_chat_config())
+        read = await router.read_prompt(req.model_id, first.messages, first.tools, first.settings)
+        if read:
+            logger.info("phone call %s: its line's prompt was read ahead in %.1f s", req.session_id,
+                        loop.time() - started)
+        return read
+
+    def _read(self, model: str, line_id: str, task: asyncio.Task) -> None:
+        """A read's end: a given-up one is the call ending; a failure is one warning per outage (`_first_failure`)."""
+        self._reading.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if self._first_failure(model, exc):
+            logger.warning("phone line %s: model %s didn't read the line's prompt ahead of the first question (%s); "
+                           "the first answer reads it instead", line_id, model, type(exc).__name__,
+                           exc_info=None if isinstance(exc, (*_LOAD_OUTAGES, *_OUTAGES)) else exc)
+
+    @staticmethod
+    async def _give_up(task: asyncio.Task | None) -> None:
+        """The call is over: a read of its line's prompt still running helps no one, and costs the server its CPU."""
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def stop(self) -> None:
         """R10.6: stop accepting, hang up every live call and wait for each to finish (they are recorded `shutdown`),
@@ -492,10 +551,11 @@ class PhoneService:
             if pending:
                 logger.warning("%d phone call(s) still ending at shutdown", len(pending))
         # A provider-list request that outlived its calls' bound (R10.11), a warm-up still reading the options, the
-        # refresher and any load still running (R17.1, R17.3): nothing waits for them any more.
+        # refresher, any load still running (R17.1), and a read of a line's prompt whose call didn't end in time
+        # (R19.2): nothing waits for them any more.
         warming, self._warming = self._warming, None
         refreshing, self._refreshing = self._refreshing, None
-        leftovers = [*self._listing.values(), *self._loading.values(),
+        leftovers = [*self._listing.values(), *self._loading.values(), *self._reading,
                      *(task for task in (warming, refreshing) if task is not None)]
         for task in leftovers:
             task.cancel()
@@ -587,11 +647,15 @@ class PhoneService:
         if not self._take_slot(line):
             await self._refuse(live, line, gate.clips, "busy", "busy")
             return
-        self._warm_model(gate)
+        session_id = new_session_id()
+        reading = self._read_ahead(gate, session_id)
         try:
-            await self._call(media, live, gate)
+            await self._call(media, live, gate, session_id)
         finally:
-            self._free_slot(line)
+            try:
+                await self._give_up(reading)
+            finally:
+                self._free_slot(line)        # even if this task is cancelled while the read goes
 
     async def _gate(self, line_id: str) -> _Gate:
         """Steps 1 to 4 above. The reads share one short connection; the model checks run after it is back in the
@@ -617,7 +681,7 @@ class PhoneService:
                 or not await self._listed(line, router.canonical_id(line.model_id), router):
             logger.info("phone line %s: its model %s may no longer answer; closed", line.id, line.model_id)
             return _Gate(line, "closed", clips)
-        return _Gate(line, None, clips, options, budget, models)
+        return _Gate(line, None, clips, options, budget)
 
     async def _listed(self, line: Line, model: str, router) -> bool:
         """Whether the provider still has `model` (model_refusal's last rule), waiting at most MODEL_CHECK_S. Past
@@ -668,12 +732,11 @@ class PhoneService:
         if self._call_models[line.model_id] <= 0:
             del self._call_models[line.model_id]
 
-    async def _call(self, media: CallMedia, live: _Live, gate: _Gate) -> None:
+    async def _call(self, media: CallMedia, live: _Live, gate: _Gate, session_id: str) -> None:
         line = gate.line
         if self._stopping:
             await self._hang_up(live)
             return
-        session_id = new_session_id()
         try:
             # Bounded like the gate: the keep-alive holds the caller on the line, so a stalled INSERT (a lock wait, a
             # stuck server) would otherwise be silence until they hang up. Past GATE_S (TimeoutError) it is the

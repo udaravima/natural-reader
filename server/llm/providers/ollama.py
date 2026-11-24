@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, AsyncIterator
 
 import httpx
@@ -115,6 +116,27 @@ class OllamaProvider:
             raise provider_error(resp.status_code, resp.content)
         return True
 
+    async def read_prompt(self, model: str, messages: list[Message], tools: list[ToolSpec],
+                          settings: CallSettings) -> bool:
+        """Have Ollama read `messages` and `tools` into its prompt cache (loading the model if it must) ahead of a turn
+        that will start with them. Ollama reuses a cached prompt by its prefix, so the body is the one the turn's
+        first attempt sends (`_body`, with the thinking switch and the tools chosen as `stream_chat` chooses them):
+        only `stream` (false: the answer is awaited) and `num_predict` (1: at most one token, which is thrown away)
+        differ, and neither is an option that makes Ollama reload a model. True once read; raises as a turn would
+        when Ollama can't be reached or refuses."""
+        caps = await self.capabilities(model)
+        body = self._body(model, messages, tools if self._use_tools(model, tools, caps) else [],
+                          replace(settings, num_predict=1), self._think_value(model, settings, caps))
+        body["stream"] = False
+        try:
+            resp = await self._client.post(f"{self.config.url}/api/chat", json=body,
+                                           headers=auth_headers(self.config))
+        except httpx.HTTPError as e:
+            raise ProviderUnavailable(type(e).__name__) from e
+        if resp.status_code != 200:
+            raise provider_error(resp.status_code, resp.content)
+        return True
+
     async def capabilities(self, model: str) -> Capabilities:
         return self._features.apply(model, await self._shown_capabilities(model))
 
@@ -153,7 +175,7 @@ class OllamaProvider:
                           settings: CallSettings) -> AsyncIterator[Chunk]:
         caps = await self.capabilities(model)
         think = self._think_value(model, settings, caps)
-        use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
+        use_tools = self._use_tools(model, tools, caps)
         dropped: list[str] = []
         overflowed = False
         while True:
@@ -181,6 +203,10 @@ class OllamaProvider:
             yield chunk
         async for chunk in self._read(resp):
             yield chunk
+
+    def _use_tools(self, model: str, tools: list[ToolSpec], caps: Capabilities) -> bool:
+        """Whether a request sends `tools`: not to a model that lists no tool support or refused them before."""
+        return bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
 
     def _think_value(self, model: str, settings: CallSettings, caps: Capabilities) -> Any:
         if caps.thinking is False:

@@ -55,9 +55,13 @@ NUMBERS = {w: str(n) for n, w in enumerate(
 NUMBERS.update({"thirty": "30", "forty": "40", "fifty": "50"})
 CALL_TIMEOUT_S = 900          # a CPU-only machine hears, thinks and speaks slowly
 # The fake PBX ends an answer after QUIET_S of quiet once its first sound has come. The line's filler and "Still
-# checking" clips play before the answer (the app's search found passages for the question, R18.3), and on a cold
-# first turn a CPU-only machine then reads the ~2,000-token prompt for about 20-25 s before the first word. The same
-# quiet rule ends the greeting, so the greeting's timeout must cover the greeting itself plus QUIET_S.
+# checking" clips play before the answer (the app's search found passages for the question, R18.3). In a real call
+# the read of the line's prompt, started as the call connects (R19.2), is often still running when the question
+# comes, and on a CPU-only machine the first word follows about 10 s later. In this harness the same quiet rule ends
+# the greeting, so the question comes QUIET_S after it, and the read has finished by then. QUIET_S is sized for a run
+# with the read off (PHONE_MODEL_KEEP_ALIVE=0, which also stops keeping the model loaded): the first turn then reads
+# the whole ~1,500-token prompt itself, about 18 s, and a model that has to load first adds its load to that. The
+# greeting's timeout must cover the greeting itself plus QUIET_S.
 QUIET_S = 25
 GREETING_TIMEOUT_S = 60
 # The fake PBX asks its question QUIET_S after the welcome goes quiet, and the line's idle clock (PHONE_IDLE_S) runs

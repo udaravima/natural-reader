@@ -1,6 +1,6 @@
 """Keeping a phone line's model loaded (R17.1 to R17.8, server/phone/service.py): the refresher that loads the open
-lines' models when the listener starts and every REFRESH_S after, without fighting anyone for memory, the load each
-accepted call starts, and how both stay out of a call's way.
+lines' models when the listener starts and every REFRESH_S after, without fighting anyone for memory; the read of the
+line's prompt each accepted call starts, which loads the model too (R19.2); and how both stay out of a call's way.
 
 The refresher's sleep is a fake clock (`Ticks`): a tick happens only when the test says so. Most tests put a real
 Router in front of a fake local Ollama (`FakeOllama`, its HTTP only), beside two hosted APIs that must never be asked
@@ -10,6 +10,7 @@ is stopped when the test ends, whatever happened (`phone`)."""
 import asyncio
 import json
 import logging
+import re
 import secrets
 from dataclasses import replace
 
@@ -18,6 +19,7 @@ import psycopg
 import pytest
 
 from server.auth.users import SEED_ADMIN_ID
+from server.chat import context as chat_context
 from server.llm import router as llm_router
 from server.phone import service, store, vad
 from server.phone.config import PhoneConfig
@@ -25,8 +27,8 @@ from server.services import console_settings, model_settings
 from server.tests import seed
 from server.tests.llm_fakes import ndjson
 from server.tests.test_phone_service import (  # noqa: F401 (the fixtures are used by name)
-    CFG, END, GREETED, GREETING, QUESTION, START, VOICE, FakeMedia, calls_of, clip_rows, ears, pool, real_call,
-    router, scratch_url, sessions, until)
+    CFG, END, GREETED, GREETING, LOOK_IT_UP, QUESTION, START, VOICE, FakeMedia, axis, calls_of, clip_rows, ears,
+    make_line_with_hours, messages_of, pool, real_call, router, scratch_url, sessions, until)
 from server.tests.test_project_members import _p, _user
 
 LISTENING = PhoneConfig(listen="127.0.0.1:0", allow=(), pbx_address="127.0.0.1:0")
@@ -89,13 +91,16 @@ class FakeOllama:
       when it names none: 128000 here, as on a server whose OLLAMA_CONTEXT_LENGTH is 128000); past `room` models the
       one loaded longest ago is pushed out, as Ollama does when memory runs short. A model in `missing` is listed
       but refuses to load (a 404).
-    - A chat with messages (a turn) is answered with one streamed sentence.
+    - A pre-read (a chat with messages that waits for the whole answer: stream false, R19.2) loads its model the same
+      way, and answers with one token.
+    - A chat with messages that streams (a turn) is answered with one streamed sentence.
     - /api/ps lists what is loaded, with each model's context size, times `parallel` (an Ollama may report the size
       for all its parallel slots); /api/tags what is installed; /api/show a model's capabilities.
-    - `down` makes every request fail to connect, `ps_down` only /api/ps, `failing_loads` only the loads, and `held`
-      (an Event) holds each load until it is set. Requests to any other host are noted too, so a test can see
-      nothing reached one."""
-    TAGS = ("gemma4:e4b", "qwen3:8b", "llama3.2:3b", "test-model")
+    - `down` makes every request fail to connect, `ps_down` only /api/ps, `failing_loads` only the loads and
+      pre-reads, and `held` (an Event) holds each load and pre-read until it is set; `cancelled` counts the held ones
+      whose request was given up, and `slow_cancel` (seconds) makes such a request take that long to go. Requests to
+      any other host are noted too, so a test can see nothing reached one."""
+    TAGS = ("gemma4:e4b", "qwen3:8b", "llama3.2:3b", "test-model", "gpt-oss:120b-cloud")
     SHOW = {"capabilities": ["completion", "tools", "thinking"], "model_info": {"gemma3.context_length": 131072}}
     DEFAULT_CTX = 128000
 
@@ -109,6 +114,8 @@ class FakeOllama:
         self.ps_down = False
         self.failing_loads = False
         self.held: asyncio.Event | None = None
+        self.cancelled = 0
+        self.slow_cancel = 0.0
         self.router: llm_router.Router | None = None
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
@@ -123,20 +130,30 @@ class FakeOllama:
             return httpx.Response(200, json={"models": [{"name": n} for n in self.TAGS]})
         if path == "/api/show":
             return httpx.Response(200, json=self.SHOW)
-        if path == "/api/chat" and json.loads(request.content)["messages"]:
+        body = json.loads(request.content) if path == "/api/chat" else {}
+        if path == "/api/chat" and body["messages"] and body.get("stream", True):
             return ndjson({"message": {"role": "assistant", "content": "We open at nine."}},
                           {"done": True, "done_reason": "stop", "prompt_eval_count": 10, "eval_count": 5})
         if path == "/api/chat":
-            body = json.loads(request.content)
             model = body["model"]
             if self.held is not None:
-                await self.held.wait()
+                try:
+                    await self.held.wait()
+                except asyncio.CancelledError:
+                    self.cancelled += 1
+                    if self.slow_cancel:
+                        await asyncio.sleep(self.slow_cancel)
+                    raise
             if model in self.missing:
                 return httpx.Response(404, json={"error": f"model '{model}' not found"})
             self.loaded.pop(model, None)
             self.loaded[model] = (body.get("options") or {}).get("num_ctx", self.DEFAULT_CTX) * self.parallel
             while len(self.loaded) > self.room:
                 del self.loaded[next(iter(self.loaded))]
+            if body["messages"]:
+                return httpx.Response(200, json={"model": model, "message": {"role": "assistant", "content": "We"},
+                                                 "done": True, "done_reason": "length", "prompt_eval_count": 1000,
+                                                 "eval_count": 1})
             return httpx.Response(200, json={"model": model, "done": True, "done_reason": "load"})
         return httpx.Response(404, json={"error": f"no route {path}"})
 
@@ -144,8 +161,13 @@ class FakeOllama:
         return [json.loads(r.content) for r in self.requests if r.url.path == "/api/chat"]
 
     def loads(self) -> list[dict]:
-        """The body of each load request, in the order they arrived."""
-        return [body for body in self.chats() if not body["messages"]]
+        """The body of each request that loads a model without answering a caller, in the order they arrived: the
+        refresher's loads, and each call's pre-read (R19.2), which loads the model as it reads the line's prompt."""
+        return [body for body in self.chats() if not body["messages"] or body.get("stream") is False]
+
+    def prereads(self) -> list[dict]:
+        """The body of each call's pre-read of its line's prompt."""
+        return [body for body in self.loads() if body["messages"]]
 
     def models(self) -> list[str]:
         return [body["model"] for body in self.loads()]
@@ -248,14 +270,15 @@ async def test_the_refresher_loads_again_each_period_and_follows_the_lines(pool,
 
 async def test_keep_alive_0_loads_nothing_and_runs_no_refresher(pool, ollama, phone, sessions):
     # Brief test 5. PHONE_MODEL_KEEP_ALIVE=0 leaves the model to Ollama, as any chat's is: no load at start, no
-    # refresher, none when a call connects (and its turns send no keep_alive: test_phone_call).
+    # refresher, no read of the line's prompt when a call connects (R19.2), and its turns send no keep_alive
+    # (test_phone_call).
     made = await line(pool, "ollama:gemma4:e4b")
     ticks = Ticks()
     svc = phone(replace(LISTENING, model_keep_alive_s=0), ticks)
     await svc.start()
     await answered(svc, FakeMedia(made.id), sessions, 1)
     await asyncio.sleep(0.1)
-    assert ollama.loads() == [] and ticks.slept == [] and phone_tasks() == []
+    assert ollama.chats() == [] and ticks.slept == [] and phone_tasks() == []
 
 
 async def test_a_keep_alive_cap_of_0_keeps_nothing_and_never_sends_keep_alive_0(pool, ollama, phone, sessions,
@@ -280,7 +303,7 @@ async def test_a_keep_alive_too_short_to_bridge_two_ticks_turns_the_refresher_of
                                                                                  monkeypatch, caplog):
     # A model refreshed every REFRESH_S must still be loaded at the next tick with time to spare, or every tick would
     # reload it. INFERENCE_KEEP_ALIVE_MAX of 3 min caps the keep-alive at 180 s: the refresher stays off and says why,
-    # once. A call still loads its model, under the capped keep-alive.
+    # once. A call still loads its model (its read of the line's prompt, R19.2), under the capped keep-alive.
     monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "3m")
     made = await line(pool, "ollama:gemma4:e4b")
     ticks = Ticks()
@@ -295,49 +318,92 @@ async def test_a_keep_alive_too_short_to_bridge_two_ticks_turns_the_refresher_of
     assert ollama.loads()[0]["keep_alive"] == 180
 
 
-# --- R17.2: a load asks for what the call's turns will ---
+# --- R19.2 (and R17.2): a call reads its line's prompt as its first turn will send it ---
 
-async def test_a_calls_load_and_its_turn_send_ollama_the_same_options(pool, real_call, ollama, phone, monkeypatch):
-    # Brief test 3, R17.2 as amended. Both requests are built by the real code: the gate and the load it starts, the
-    # CallSession, the chat engine (run_turn), the Router and the Ollama adapter; the fake is only Ollama's HTTP
-    # (the recognizer and the voice are fakes too, but build no request). The two agree on the model, the keep-alive
-    # and every option, the context size included. A phone turn on a self-hosted model sends 16,384 (the default in
-    # model_settings): a load sending none would load at Ollama's own default, and the first answer would reload the
-    # model. A context size the console sets for the model then moves both.
+async def test_a_calls_pre_read_is_its_first_turns_prefix_with_the_same_options(pool, real_call, ollama, phone,
+                                                                                 monkeypatch):
+    # R19.2. When a call is let in, the line's prompt is read ahead of the caller's first question, so Ollama has it
+    # cached when the question comes: read cold, the line's prompt took about 22 s on a CPU-only machine. Ollama
+    # caches by prefix, so the read must send what the first turn will, up to the caller's words. Both requests are
+    # built by the real code (the gate and the read it starts; the CallSession, run_turn, the Router and the Ollama
+    # adapter); the fakes are Ollama's HTTP and the question's embedding. They agree on the system message, the tools
+    # (the phone's two, R19.1), the thinking switch, the keep-alive and every option, the context size included (R17.2:
+    # a changed num_ctx would reload the model). The read waits for its answer and asks for one token. A context size
+    # the console sets for the model moves both.
+    async def embed(text: str) -> list[float]:
+        return axis(0 if "Saturday" in text else 1)        # the question finds the line's passage
+    monkeypatch.setattr(chat_context, "embed_query", embed)
     monkeypatch.setattr(service, "get_router", lambda: ollama.router)
-    made = await line(pool, "ollama:gemma4:e4b")
+    made = await make_line_with_hours(pool)
     svc = phone(CFG)
-    loading = ("model", "options", "keep_alive")
 
     async def one_call() -> tuple[dict, dict]:
-        before = (len(ollama.loads()), len(ollama.turns()))
+        before = (len(ollama.prereads()), len(ollama.turns()))
         media = FakeMedia(made.id, say=[(0.3, START), (0.4, END)])
         running = asyncio.create_task(svc.handle(media))
-        await until(lambda: len(ollama.turns()) > before[1] and len(media.heard()) == 2)   # the greeting, the answer
+        await until(lambda: len(ollama.turns()) > before[1] and len(media.heard()) >= 2)   # the greeting, the answer
         media.caller_hangs_up()
         await asyncio.wait_for(running, 5)
-        [load] = ollama.loads()[before[0]:]
+        [read] = ollama.prereads()[before[0]:]
         [turn] = ollama.turns()[before[1]:]
-        return {k: load.get(k) for k in loading}, {k: turn.get(k) for k in loading}
+        return read, turn
 
-    load, turn = await one_call()
-    assert load == turn == {"model": "gemma4:e4b", "options": {"num_ctx": OURS}, "keep_alive": 900}
+    for size in (OURS, 8192):
+        if size != OURS:
+            async with pool.connection() as conn:
+                await console_settings.save(conn, model_settings.SECTION,
+                                            {"context_sizes": {"ollama:test-model": size}}, updated_by=SEED_ADMIN_ID)
+        try:
+            read, turn = await one_call()
+        finally:
+            async with pool.connection() as conn:
+                await conn.execute("DELETE FROM app_settings WHERE key = %s", (model_settings.SECTION.key,))
+        assert read["messages"][0] == turn["messages"][0] and read["tools"] == turn["tools"]
+        assert [t["function"]["name"] for t in read["tools"]] == ["search_documents", "current_time"]
+        assert read["messages"][1:] == [{"role": "user", "content": f"({LOOK_IT_UP})"}]   # no caller's words yet
+        same = ("model", "think", "keep_alive")
+        assert {k: read.get(k) for k in same} == {k: turn.get(k) for k in same} == {
+            "model": "test-model", "think": False, "keep_alive": 900}
+        assert turn["options"] == {"num_ctx": size} and read["options"] == {"num_ctx": size, "num_predict": 1}
+        assert read["stream"] is False and turn["stream"] is True
+
+
+async def test_a_pre_read_stores_nothing(pool, ollama, phone, sessions, caplog):
+    # R19.2, as R17.6 for a load: reading the line's prompt is no turn, whatever it generates is thrown away. A call
+    # whose prompt was read and that hangs up after the welcome leaves only what opening a call writes, its chat with
+    # the greeting: no message, log line or usage for the read, and the chat's profile still unset (a turn sets it).
+    # The backend's log says how long the read took, in the line the docs quote (R19.6, M9).
+    caplog.set_level(logging.INFO, logger="server.phone.service")
+    made = await make_line_with_hours(pool)
+    svc = phone(CFG)
+    media = FakeMedia(made.id)
+    running = asyncio.create_task(svc.handle(media))
+    await until(lambda: len(sessions) == 1 and len(ollama.prereads()) == 1 and phone_tasks() == [])
+    media.caller_hangs_up()
+    await asyncio.wait_for(running, 5)
+    [call] = await calls_of(pool, made.id)
+    assert await messages_of(pool, call["session_id"]) == [("assistant", GREETING, "complete")]
     async with pool.connection() as conn:
-        await console_settings.save(conn, model_settings.SECTION, {"context_sizes": {"ollama:gemma4:e4b": 8192}},
-                                    updated_by=SEED_ADMIN_ID)
-    try:
-        load, turn = await one_call()
-    finally:
-        async with pool.connection() as conn:
-            await conn.execute("DELETE FROM app_settings WHERE key = %s", (model_settings.SECTION.key,))
-    assert load == turn == {"model": "gemma4:e4b", "options": {"num_ctx": 8192}, "keep_alive": 900}
+        cur = await conn.execute("SELECT count(*) FROM chat_events WHERE session_id = %s", (call["session_id"],))
+        events = (await cur.fetchone())[0]
+        cur = await conn.execute("SELECT count(*) FROM inference_usage WHERE user_id = %s", (made.service_user_id,))
+        usage = (await cur.fetchone())[0]
+        cur = await conn.execute("SELECT profile_id FROM chat_sessions WHERE id = %s", (call["session_id"],))
+        profile = (await cur.fetchone())[0]
+    assert (events, usage, profile) == (0, 0, None)
+    [said] = [r for r in caplog.records if "prompt was read ahead" in r.getMessage()]
+    assert said.levelno == logging.INFO
+    assert re.fullmatch(rf"phone call {call['session_id']}: its line's prompt was read ahead in \d+\.\d s",
+                        said.getMessage())
 
 
-# --- R17.3: warm on connect ---
+# --- R19.2 (as R17.3): the read never holds up a call, and ends with it ---
 
-async def test_a_call_starts_its_models_load_and_never_waits_for_it(pool, real_call, ollama, phone, monkeypatch):
-    # Brief test 6. The model takes the whole call to load (a reload after an eviction): the greeting starts at once
-    # all the same, the call ends with the load still running (it isn't the call's), and stop() cancels it cleanly.
+async def test_a_stalled_pre_read_never_delays_the_welcome_and_ends_with_the_call(pool, real_call, ollama, phone,
+                                                                                  monkeypatch):
+    # Brief test 4. Ollama never finishes reading the line's prompt (a reload after an eviction, a stuck server): the
+    # greeting starts at once all the same (under 1 s of the loop's clock after connect, with the read held for good),
+    # and the call goes on. The caller's hang-up gives the read up, so nothing of it outlives the call.
     monkeypatch.setattr(service, "get_router", lambda: ollama.router)
     ollama.held = asyncio.Event()
     made = await line(pool, "ollama:gemma4:e4b")
@@ -346,18 +412,99 @@ async def test_a_call_starts_its_models_load_and_never_waits_for_it(pool, real_c
     loop = asyncio.get_running_loop()
     connected = loop.time()
     running = asyncio.create_task(svc.handle(media))
-    await until(lambda: GREETED in media.heard())
+    await until(lambda: GREETED in media.heard() and len(ollama.prereads()) == 1)
     assert media.first_sound_at - connected < 1.0
-    [load] = ollama.loads()
-    assert (load["model"], load["keep_alive"], load["options"]) == ("gemma4:e4b", 900, {"num_ctx": OURS})
+    await asyncio.sleep(0.2)
+    assert not running.done() and media.hang_ups == 0 and len(phone_tasks()) == 1     # the call carries on
     media.caller_hangs_up()
     await asyncio.wait_for(running, 5)
-    [loading] = phone_tasks()
+    assert phone_tasks() == [] and ollama.cancelled == 1
+    assert [c["end_reason"] for c in await calls_of(pool, made.id)] == ["caller"]
+
+
+async def test_stop_gives_up_a_pre_read_still_running(pool, real_call, ollama, phone, monkeypatch):
+    # Brief test 4: the app stopping hangs the call up, and the read it started is given up with it.
+    monkeypatch.setattr(service, "get_router", lambda: ollama.router)
+    ollama.held = asyncio.Event()
+    made = await line(pool, "ollama:gemma4:e4b")
+    svc = phone(CFG)
+    media = FakeMedia(made.id)
+    running = asyncio.create_task(svc.handle(media))
+    await until(lambda: GREETED in media.heard() and len(ollama.prereads()) == 1)
     await asyncio.wait_for(svc.stop(), 5)
-    assert loading.cancelled() and phone_tasks() == []
+    await asyncio.wait_for(running, 5)
+    assert phone_tasks() == [] and ollama.cancelled == 1
+    assert [c["end_reason"] for c in await calls_of(pool, made.id)] == ["shutdown"]
 
 
-async def test_each_accepted_call_starts_one_load_and_a_refused_call_none(pool, ollama, phone, sessions):
+async def test_a_call_interrupted_while_it_gives_up_its_read_still_frees_its_place(pool, real_call, ollama, phone,
+                                                                                  monkeypatch):
+    # R19.6 (M2). A call's end gives its read up and waits for it to go. If the call's own task is cancelled during
+    # that wait, its place must still be freed: otherwise the line would answer "busy" for good once its cap was
+    # reached, and the refresher would count the call as live (R17.9) for good.
+    monkeypatch.setattr(service, "get_router", lambda: ollama.router)
+    ollama.held = asyncio.Event()
+    ollama.slow_cancel = 1.0                           # the given-up read takes a second to go
+    made = await line(pool, "ollama:gemma4:e4b")
+    svc = phone(CFG)
+    media = FakeMedia(made.id)
+    running = asyncio.create_task(svc.handle(media))
+    await until(lambda: GREETED in media.heard() and len(ollama.prereads()) == 1)
+    assert svc.status()["active"] == 1
+    media.caller_hangs_up()
+    await until(lambda: ollama.cancelled == 1)        # the call is over, and waits for its read to go
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert svc.status()["active"] == 0 and not svc._call_models
+
+
+async def test_a_read_whose_build_fails_warns_once_per_outage_and_sends_nothing(pool, ollama, phone, sessions,
+                                                                                monkeypatch, caplog):
+    # R19.5.4, R19.6 (M9). The read's own build can fail too: the database away while `first_request` reads the
+    # line's settings. Every call still goes through, one warning covers the outage (ids and the error's type, no
+    # traceback), and nothing is sent to Ollama instead (no bare load).
+    built = []
+
+    async def database_away(req, *, router, cfg):
+        built.append(req.session_id)
+        raise psycopg.OperationalError("the database is away")
+    monkeypatch.setattr(service, "first_request", database_away)
+    made = await line(pool, "ollama:gemma4:e4b")
+    svc = phone(CFG)
+    for count in (1, 2, 3):
+        await answered(svc, FakeMedia(made.id), sessions, count)
+        await until(lambda: phone_tasks() == [])
+    assert len(built) == 3 and len(sessions) == 3                      # every call went through, and tried a read
+    assert ollama.chats() == []
+    [warning] = warnings_naming(caplog, "didn't read the line's prompt")
+    assert warning.exc_info is None and "OperationalError" in warning.getMessage()
+
+
+async def test_a_calls_read_teaches_the_refresher_the_phones_own_size(pool, ollama, phone, sessions, caplog):
+    # R17.9's guard, reached through a call's read (R19.6, M9). An Ollama may report another context size than the
+    # num_ctx asked (16384 x 2 here). The size /api/ps shows right after the call's read is the phone's from then on,
+    # so the next tick refreshes that copy (c), and never leaves it alone as someone else's (b).
+    caplog.set_level(logging.INFO, logger="server.phone.service")
+    ollama.parallel = 2
+    ticks = Ticks()
+    svc = phone(ticks=ticks)
+    await svc.start()
+    await ticks.first()                                # no line yet: the first tick loads nothing
+    made = await line(pool, "ollama:gemma4:e4b")
+    media = FakeMedia(made.id)
+    running = asyncio.create_task(svc.handle(media))
+    await until(lambda: len(sessions) == 1 and len(ollama.prereads()) == 1 and len(phone_tasks()) == 1)
+    media.caller_hangs_up()                            # the read is done (only the refresher is left)
+    await asyncio.wait_for(running, 5)
+    assert ollama.loaded == {"gemma4:e4b": 2 * OURS} and ollama.loads() == ollama.prereads()
+    await ticks.tick()
+    assert [r for r in caplog.records if "left alone" in r.getMessage()] == []
+    assert [body["model"] for body in ollama.loads() if not body["messages"]] == ["gemma4:e4b"]   # refreshed: (c)
+
+
+async def test_each_accepted_call_reads_its_lines_prompt_once_and_a_refused_call_nothing(pool, ollama, phone,
+                                                                                        sessions):
     made = await line(pool, "ollama:gemma4:e4b")
     off = await line(pool, "ollama:qwen3:8b", on=False)
     svc = phone(CFG)
@@ -366,10 +513,22 @@ async def test_each_accepted_call_starts_one_load_and_a_refused_call_none(pool, 
         await until(lambda: phone_tasks() == [])
     await asyncio.wait_for(svc.handle(FakeMedia(off.id)), 5)          # `closed`: the line is off
     await asyncio.sleep(0.05)
-    assert ollama.models() == ["gemma4:e4b", "gemma4:e4b"]
+    assert [body["model"] for body in ollama.prereads()] == ["gemma4:e4b", "gemma4:e4b"]
+    assert ollama.loads() == ollama.prereads()                         # no bare load besides: the read loads it
 
 
-async def test_a_load_that_fails_never_ends_the_call(pool, real_call, ollama, phone, monkeypatch, caplog):
+async def test_a_hosted_model_gets_no_pre_read(pool, ollama, phone, sessions):
+    # Brief test 5 (R19.2, as R17.8 I2): only a server the deployer hosts is asked to read a prompt. An Ollama cloud
+    # model, even on the local server, caches nothing here, and a request there may cost money. The call goes on.
+    made = await line(pool, "ollama:gpt-oss:120b-cloud")
+    svc = phone(CFG)
+    await answered(svc, FakeMedia(made.id), sessions, 1)
+    await asyncio.sleep(0.05)
+    assert len(sessions) == 1 and ollama.chats() == [] and phone_tasks() == []
+
+
+async def test_a_pre_read_that_fails_never_ends_the_call(pool, real_call, ollama, phone, monkeypatch, caplog):
+    # Brief test 4: Ollama refuses the read. One warning (ids and the error's type only); the call goes on.
     monkeypatch.setattr(service, "get_router", lambda: ollama.router)
     ollama.failing_loads = True
     made = await line(pool, "ollama:gemma4:e4b")
@@ -383,7 +542,7 @@ async def test_a_load_that_fails_never_ends_the_call(pool, real_call, ollama, ph
     await asyncio.wait_for(running, 5)
     assert [c["end_reason"] for c in await calls_of(pool, made.id)] == ["caller"]
     [warning] = warnings_naming(caplog, "gemma4:e4b")
-    assert "ProviderUnavailable" in warning.getMessage()
+    assert "ProviderUnavailable" in warning.getMessage() and warning.exc_info is None
 
 
 # --- R17.8: don't fight ---
@@ -462,7 +621,7 @@ async def test_a_live_call_only_stops_other_models_being_loaded_into_memory(pool
     assert sorted(ollama.models()) == ["gemma4:e4b", "qwen3:8b"]
     media = FakeMedia(gemma.id)
     running = asyncio.create_task(svc.handle(media))
-    await until(lambda: len(sessions) == 1 and len(ollama.loads()) == 3)      # the call's own load at connect
+    await until(lambda: len(sessions) == 1 and len(ollama.loads()) == 3)      # the call's read of its line's prompt
     for _ in range(7):
         await ticks.tick()
     during = ollama.models()[3:]

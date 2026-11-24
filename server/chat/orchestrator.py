@@ -32,7 +32,7 @@ from ..db import get_pool
 from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
-                         TextDelta, ToolCall, ToolCallReady, Usage)
+                         TextDelta, ToolCall, ToolCallReady, ToolSpec, Usage)
 from ..services import app_identity, chat_options, deployment_settings, inference_budget, model_settings
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
@@ -43,11 +43,11 @@ from .config import ChatConfig
 from .context import TurnInput, build_context, history_real_values, today_text
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
-from .prompt import document_tools_offered
+from .prompt import OUTLINE, document_tools_offered
 from .reader import BatchCall, ReaderConfig, get_reader_config, resolve_model
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text, tool_spec
+from .tools import ToolContext, ToolRun, TurnTools, available_tools, offered_on, result_text, tool_spec
 from .tools.scope import scope_docs
 from .web_consent import (APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, offer_note, search_possible,
                           web_offer)
@@ -267,20 +267,9 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                  userMessageId=claim.user_message_id, messageId=claim.assistant_message_id,
                  profileId=profile.id, profileName=profile.name)
         await _log_sent(claim, req)
-        caps = await _capabilities(router, req.model_id)
-        project = await _project_scope(req) if req.project_id else None
-        doc = None if req.project_id else await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
         options = await _chat_options()
-        # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
-        # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
-        # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed. A phone line's load
-        # request is sized by the same function, so loading its model never makes a call's turn reload it (R17.2).
-        models_cfg = await _models_settings()
-        provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
-        model_key = f"{provider.config.name}:{model_name}"
-        settings = model_settings.sized_settings(models_cfg, router, req.model_id, req.settings, get_limits())
         # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
         # nothing visible left is no approval (chat/web_consent.py).
         web_query = clean_query(req.web_query) if req.web_query else None
@@ -289,34 +278,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         if web_query and options.web_search == "off":
             logger.info("An approved web search was ignored: web search is off")   # never the query itself
             web_query = None
-        # Tools first: the system rules describe exactly the tools this turn
-        # offers (server/chat/prompt.py), so none is ever named in vain.
-        # A project chat gets a map of the project in the system message; if it had to be shortened,
-        # document_outline is offered for the turn (chat/project_map.py), and the map says to call it only
-        # when this turn offers tools at all.
-        max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
-        tools_on = caps.tools is not False and max_rounds > 0
-        project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
-        # A turn that holds a file sent with its real values never searches the web unasked: "auto" behaves as
-        # "ask", so the person sees a query before it leaves (a file's words can ride out in one). Kept files
-        # only count when this model may see them (chat/context.py); trimming is decided later, so this errs safe.
-        web_mode = options.web_search
-        if web_mode == "auto" and (req.real_values or history_real_values(history, req.model_id)):
-            web_mode = "ask"
-        if web_mode == "ask" and req.spoken:
-            web_mode = "off"   # "ask" ends the turn on a card to press, and a spoken conversation has none
-        if req.channel == "phone":
-            web_mode = "off"   # a caller can't be asked to approve a search, and nothing from the web is read down a line
-        default_timezone = await _deployment_timezone()   # the "Today" line's fallback, and current_time's
-        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
-                               timezone=req.timezone, default_timezone=default_timezone,
-                               map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
-                               model=req.model_id, web_mode=web_mode, web_approved=bool(web_query),
-                               charge=functools.partial(_charge_reader, req.user_id),
-                               reader_cfg=_turn_reader(router, models_cfg, req.model_id, model_key, settings))
-        offered = [] if caps.tools is False else available_tools(tool_ctx)
+        setup = await _setup(req, router=router, cfg=cfg, options=options, history=history, web_query=web_query)
+        project, doc, tool_ctx, offered = setup.project, setup.doc, setup.tool_ctx, setup.offered
+        max_rounds, settings, project_map = setup.max_rounds, setup.settings, setup.project_map
         app_exchange = ()
-        if web_query and tools_on and search_possible():
+        if web_query and setup.tools_on and search_possible():
             # The user's yes: search before the model's first step and hand it the result as a tool exchange.
             yield ev("tool-input-available", toolCallId=APP_WEB_CALL_ID, toolName="web_search",
                      input={"query": web_query}, round=0)
@@ -326,19 +292,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             app_exchange = app_web_exchange(web_run)
         elif web_query:
             logger.info("An approved web search was not run: the model has no tools this turn, or no search engine is set up")
-        now = datetime.now(timezone.utc)
-        lead = profile_text.fill(profile.combined, date=today_text(now, req.timezone, default_timezone),
-                                 app=app_identity.current().name, profile=profile.name)
-        built = await build_context(TurnInput(
-            user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
-            timezone=req.timezone, pins=pins, history=history,
-            window=_window(provider.config, model_key, settings, caps, models_cfg), now=now,
-            tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
-            profile=lead.text, placed=lead.used, persona=bool(profile.text), scope=tuple(scope_docs(tool_ctx)),
-            assistant_name=profile.name if profile.builtin else "",
-            project_map=project_map.text if project_map else "", app_exchange=app_exchange,
-            default_timezone=default_timezone,
-            model=req.model_id, spoken=req.spoken, channel=req.channel), cfg)
+        built = await _context(req, setup, profile, pins=pins, history=history, app_exchange=app_exchange, cfg=cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
@@ -595,6 +549,121 @@ async def abandon_turn(req: TurnRequest, claim: TurnClaim) -> None:
     all shielded as in _finalize. Only for a run_turn generator that never
     started; once it has, its own finally owns this."""
     await _finalize(claim, _State(), "aborted", req, time.monotonic())
+
+
+@dataclass(frozen=True)
+class FirstRequest:
+    """What a turn's first model step sends: its messages, the tools' specs, and the settings (with the context size)."""
+    messages: list[Message]
+    tools: list[ToolSpec]
+    settings: CallSettings
+
+
+async def first_request(req: TurnRequest, *, router: Any, cfg: ChatConfig) -> FirstRequest:
+    """The request the first model step of `req` sends while its chat holds nothing yet, without the person's words
+    (`req.text`, its attachments and an approved web search are left out). It is built by run_turn's own code (`_setup`,
+    `_context`), so for a request with no approved web search everything before the person's words is the turn's, byte
+    for byte: a provider that caches prompts by their prefix (Ollama) can read it ahead of the turn. (An approved search
+    would also offer the turn read_web_pages in "ask" mode, which this request leaves out. A phone call never has one:
+    its web search is off.) The phone reads a line's prompt this way while its welcome plays (R19.2). No message, log
+    line, usage or profile is written, no tool or web search runs, and an empty question searches nothing. Like a turn,
+    reading the project's documents may queue a rebuild of one indexed under an older embedding model
+    (`doc_pipeline.ensure_current`); the turn would queue the same moments later."""
+    req = replace(req, text="", attachments=(), web_query=None)
+    async with get_pool().connection() as conn:
+        profile = await profile_text.resolve(conn, session_id=req.session_id, asked_id=req.profile_id)
+    setup = await _setup(req, router=router, cfg=cfg, options=await _chat_options(), history=[], web_query=None)
+    built = await _context(req, setup, profile, pins=[], history=[], app_exchange=(), cfg=cfg)
+    return FirstRequest(built.messages, [tool_spec(t, setup.tool_ctx) for t in setup.first_tools], setup.settings)
+
+
+@dataclass
+class _Setup:
+    """What a turn's model steps are built from, decided before its first step (run_turn and first_request)."""
+    caps: Capabilities
+    project: ProjectScope | None
+    doc: ReadableDoc | None
+    models_cfg: model_settings.ModelsSettings
+    provider: Any
+    model_key: str
+    settings: CallSettings
+    max_rounds: int
+    tools_on: bool
+    project_map: ProjectMap | None
+    default_timezone: str
+    tool_ctx: ToolContext
+    offered: list
+
+    @property
+    def first_tools(self) -> list:
+        """The tools the first step offers, which the rules describe: none when the turn has no tool rounds."""
+        return self.offered if self.max_rounds > 0 else []
+
+
+async def _setup(req: TurnRequest, *, router: Any, cfg: ChatConfig, options: chat_options.ChatOptions,
+                 history: list, web_query: str | None) -> _Setup:
+    """The turn's model, scope, map, web mode and tools, read and decided once. `history` is the chat's stored
+    messages (a file sent with its real values in it changes the web mode); `web_query` an approved search, cleaned."""
+    caps = await _capabilities(router, req.model_id)
+    project = await _project_scope(req) if req.project_id else None
+    doc = None if req.project_id else await _open_doc(req)
+    # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
+    # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
+    # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed. A phone line's load
+    # request is sized by the same function, so loading its model never makes a call's turn reload it (R17.2).
+    models_cfg = await _models_settings()
+    provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
+    model_key = f"{provider.config.name}:{model_name}"
+    settings = model_settings.sized_settings(models_cfg, router, req.model_id, req.settings, get_limits())
+    # Tools first: the system rules describe exactly the tools this turn
+    # offers (server/chat/prompt.py), so none is ever named in vain.
+    # A project chat gets a map of the project in the system message; if it had to be shortened,
+    # document_outline is offered for the turn (chat/project_map.py), and the map says to call it only
+    # when this turn offers it: tools at all, and a channel that may have it (a phone call may not, R19.1).
+    max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
+    tools_on = caps.tools is not False and max_rounds > 0
+    project_map, outlines = (await _project_map(project, cfg, tools_on and offered_on(req.channel, OUTLINE))
+                             if project else (None, {}))
+    # A turn that holds a file sent with its real values never searches the web unasked: "auto" behaves as
+    # "ask", so the person sees a query before it leaves (a file's words can ride out in one). Kept files
+    # only count when this model may see them (chat/context.py); trimming is decided later, so this errs safe.
+    web_mode = options.web_search
+    if web_mode == "auto" and (req.real_values or history_real_values(history, req.model_id)):
+        web_mode = "ask"
+    if web_mode == "ask" and req.spoken:
+        web_mode = "off"   # "ask" ends the turn on a card to press, and a spoken conversation has none
+    if req.channel == "phone":
+        web_mode = "off"   # a caller can't be asked to approve a search, and nothing from the web is read down a line
+    default_timezone = await _deployment_timezone()   # the "Today" line's fallback, and current_time's
+    tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
+                           timezone=req.timezone, default_timezone=default_timezone,
+                           map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
+                           model=req.model_id, web_mode=web_mode, web_approved=bool(web_query),
+                           charge=functools.partial(_charge_reader, req.user_id),
+                           reader_cfg=_turn_reader(router, models_cfg, req.model_id, model_key, settings))
+    # A phone call is offered the search and the clock only (tools.PHONE_TOOLS, R19.1).
+    offered = [] if caps.tools is False else [t for t in available_tools(tool_ctx) if offered_on(req.channel, t.name)]
+    return _Setup(caps, project, doc, models_cfg, provider, model_key, settings, max_rounds, tools_on, project_map,
+                  default_timezone, tool_ctx, offered)
+
+
+async def _context(req: TurnRequest, setup: _Setup, profile: profile_text.Resolved, *, pins: list, history: list,
+                   app_exchange: tuple, cfg: ChatConfig):
+    """The first step's messages (chat/context.py), from what `_setup` decided. `app_exchange`: an approved web
+    search the app ran before the step."""
+    now = datetime.now(timezone.utc)
+    lead = profile_text.fill(profile.combined, date=today_text(now, req.timezone, setup.default_timezone),
+                             app=app_identity.current().name, profile=profile.name)
+    return await build_context(TurnInput(
+        user_id=req.user_id, text=req.text, attachments=req.attachments, doc=setup.doc,
+        timezone=req.timezone, pins=pins, history=history,
+        window=_window(setup.provider.config, setup.model_key, setup.settings, setup.caps, setup.models_cfg),
+        now=now, tools=tuple(setup.first_tools), tool_ctx=setup.tool_ctx,
+        profile=lead.text, placed=lead.used, persona=bool(profile.text), scope=tuple(scope_docs(setup.tool_ctx)),
+        assistant_name=profile.name if profile.builtin else "",
+        project_map=setup.project_map.text if setup.project_map else "", app_exchange=app_exchange,
+        default_timezone=setup.default_timezone,
+        model=req.model_id, spoken=req.spoken, channel=req.channel), cfg)
 
 
 def _provider_error(e: Exception) -> tuple[str, str]:

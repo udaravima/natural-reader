@@ -373,11 +373,10 @@ def test_project_map_chars_config():
 
 # ---- the turn ----
 
-async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins=None, alpha_state=None,
-                        document_scope=False):
-    """A project turn over Alpha (A2) and Beta (B, the open one), after giving each an outline: Alpha
-    `headings` of them (levels 1-3 in turn), Beta two. `alpha_state` changes Alpha's state, leaving its outline.
-    `document_scope`: the same user and documents, but a chat about the open document Beta, not the project."""
+async def _mapped_project(conn, monkeypatch, *, headings=2, alpha_state=None):
+    """Alpha (A2) and Beta (B, the open one) in a project, after giving each an outline: Alpha `headings` of them
+    (levels 1-3 in turn), Beta two. `alpha_state` changes Alpha's state, leaving its outline. The chat modules use
+    `conn`, and the embedder is a fake. Returns (the member, the project id)."""
     shim_pool(monkeypatch, conn, store, orchestrator, ctx_mod, sd_tool)
 
     async def fake_embed(text):
@@ -393,12 +392,21 @@ async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins
                                         "Beta opens.", "headings"))
     if alpha_state:
         await conn.execute("UPDATE documents SET state = %s WHERE doc_id = %s", (alpha_state, A2))
+    return alice, pid
+
+
+async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins=None, alpha_state=None,
+                        document_scope=False, channel="chat", spoken=False):
+    """A project turn over `_mapped_project`'s two documents. `document_scope`: the same user and documents, but a
+    chat about the open document Beta, not the project. `channel` and `spoken`: a phone call ("phone", spoken), Talk
+    ("chat", spoken) or the web chat ("chat", not spoken)."""
+    alice, pid = await _mapped_project(conn, monkeypatch, headings=headings, alpha_state=alpha_state)
     claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="q",
                                    attachments=[], new_session_pins=pins,
                                    scope_project_id=None if document_scope else pid)
     req = orchestrator.TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="q",
                                    attachments=(), settings=CallSettings(), doc_id=B, timezone="UTC",
-                                   project_id=None if document_scope else pid)
+                                   project_id=None if document_scope else pid, spoken=spoken, channel=channel)
     return [e async for e in orchestrator.run_turn(req, claim, router=router, cfg=cfg or ChatConfig(),
                                                    deployment_budget=None)]
 
@@ -501,6 +509,42 @@ async def test_a_map_shortened_on_a_turn_without_tools_does_not_name_document_ou
     assert "document_outline" not in system                     # ...and does not name a tool the model can't call
 
 
+# ---- a phone call is offered the search and the clock, and nothing else (R19.1) ----
+
+DROPPED_ON_THE_PHONE = ("read_document_pages", "extract_from_documents", "document_outline")
+
+
+@pytest.mark.parametrize("channel, spoken, offered", [
+    ("phone", True, ["search_documents", "current_time"]),
+    ("chat", True, ["search_documents", "read_document_pages", "extract_from_documents", "document_outline",
+                    "current_time"]),
+    ("chat", False, ["search_documents", "read_document_pages", "extract_from_documents", "document_outline",
+                     "current_time"])], ids=["phone", "Talk", "web chat"])
+async def test_a_phone_call_is_offered_the_search_and_the_clock_only(db_conn, monkeypatch, channel, spoken, offered):
+    # R19.1. The tools' descriptions are about half a call's prompt, and a call's first answer reads the whole prompt
+    # (about 22 s for 2,000 tokens on a CPU-only machine). Every phone question is already searched before the model
+    # answers (R18.1), and a caller has no use for page reads, batch extraction or a full outline. Even on a project
+    # whose map was shortened (which brings document_outline in the chat), a call gets the search and the clock; the
+    # chat and Talk keep every document tool. No web search here (none is set up), so the lists are exact.
+    monkeypatch.setattr(web_search_service, "SEARXNG_URL", "")
+    router = FakeRouter()
+    await _project_turn(db_conn, monkeypatch, router, headings=120, cfg=ChatConfig(project_map_chars=500),
+                        channel=channel, spoken=spoken)
+    assert router.calls[0]["tools"] == offered
+
+
+async def test_a_phone_calls_rules_and_map_never_name_a_tool_it_isnt_offered(db_conn, monkeypatch):
+    # R19.1: the rules describe the tools offered (system_rules takes them), and the shortened map's note names
+    # document_outline only when it is offered. Nothing the model reads on a call names a dropped tool.
+    router = FakeRouter()
+    await _project_turn(db_conn, monkeypatch, router, headings=120, cfg=ChatConfig(project_map_chars=500),
+                        channel="phone", spoken=True)
+    sent = router.calls[0]["messages"]
+    system = sent[0].content
+    for name in DROPPED_ON_THE_PHONE:
+        assert not any(name in m.content for m in sent), name
+    assert "Call search_documents with a short phrase" in system and "call current_time" in system
+    assert "Outlines are shortened." in system and SHORTENED_LINE not in system
 
 
 # ---- descriptions (helper spec 2026-11-15 §5.7) ----

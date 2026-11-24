@@ -12,6 +12,7 @@ over the answer cuts it off), run on the server and fed by your phone system.
 - [Settings](#settings)
 - [The line's model stays loaded](#the-lines-model-stays-loaded)
 - [How a line finds its answers](#how-a-line-finds-its-answers)
+- [A call's first answer](#a-calls-first-answer)
 - [Limits](#limits)
 - [Privacy and security](#privacy-and-security)
 - [Trying it without a phone system](#trying-it-without-a-phone-system)
@@ -139,7 +140,7 @@ the listener off (the log says why).
 | `PHONE_IDLE_S` | `30` | 1 to 600, **seconds** | Seconds of a silent caller before the assistant asks "Are you still there?". After a second period of silence it says goodbye and hangs up. |
 | `PHONE_CHECKING_S` | `4` | 0.5 to 60, **seconds** | How long a tool (a document search, say) may run before the caller hears one "Still checking" phrase. |
 | `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. With constant background sound at talking level, such as a television next to the phone, each of the first two stretches pauses the reply for up to this long; once both are judged noise the call is in **babble mode** and the reply plays on through the sound ([how, and what it costs](#troubleshooting)). Lowering it to 10–15 shortens that silent start. |
-| `PHONE_MODEL_KEEP_ALIVE` | `15m` | a duration (`15m`, `1h`, or **seconds**: `900`); `0` turns it off | How long Ollama keeps a line's model loaded after the phone last asked for it. While the listener is on the app asks again every 2 minutes, so the model of a line that is on stays loaded, and this is how long it lingers once the line is off or the backend stops. Capped by `INFERENCE_KEEP_ALIVE_MAX` (30 minutes by default). Under 4 minutes, after the cap, the refresher stays off ([The line's model stays loaded](#the-lines-model-stays-loaded)). A value that isn't a duration is logged and replaced by the default. |
+| `PHONE_MODEL_KEEP_ALIVE` | `15m` | a duration (`15m`, `1h`, or **seconds**: `900`); `0` turns it off | How long Ollama keeps a line's model loaded after the phone last asked for it. While the listener is on the app asks again every 2 minutes, so the model of a line that is on stays loaded, and this is how long it lingers once the line is off or the backend stops. Capped by `INFERENCE_KEEP_ALIVE_MAX` (30 minutes by default). Under 4 minutes, after the cap, the refresher stays off ([The line's model stays loaded](#the-lines-model-stays-loaded)). `0` also turns off the read of a line's prompt as a call connects ([A call's first answer](#a-calls-first-answer)). A value that isn't a duration is logged and replaced by the default. |
 
 How the caller is *heard* is not repeated here. The voice-activity thresholds, the
 silence that ends a turn (700 ms), the pre-roll and the noise limits are the **speech
@@ -169,9 +170,10 @@ its lines loaded:
   model the deployment still offers and the server still lists. The request loads the
   model without generating anything: no tokens, nothing against a budget, no chat. Lines
   that share a model ask once.
-- **When a call is let in,** it asks for that line's model again, without waiting for the
-  answer. If the model had been pushed out, loading it overlaps the welcome and the
-  caller's first question instead of following them.
+- **When a call is let in,** it starts reading that line's prompt, which loads the model
+  too, without waiting for the answer ([A call's first answer](#a-calls-first-answer)). If
+  the model had been pushed out, loading it overlaps the welcome and the caller's first
+  question instead of following them.
 - **Every turn of a call** carries the same keep-alive, so a call keeps its model loaded.
 
 A load asks for exactly what the call's turns will, the context size above all, because
@@ -194,11 +196,12 @@ minutes after the cap leaves the refresher off, with a warning when the listener
 calls still load their model as they connect, so the wait overlaps the welcome rather than
 going away. A cap of 0 (`INFERENCE_KEEP_ALIVE_MAX=0`, "unload after each use") means the
 lines' models aren't kept at all: no refresher (with a warning naming the cap), no load
-when a call connects, and no keep-alive on a call's turns, which would otherwise unload
+or read when a call connects, and no keep-alive on a call's turns, which would otherwise unload
 the model after every answer.
 
-**`PHONE_MODEL_KEEP_ALIVE=0` turns all of it off,** the load at connect included, and
-restores the behaviour from before this feature exactly: no loads, no keep-alive on a
+**`PHONE_MODEL_KEEP_ALIVE=0` turns all of it off,** the read of the line's prompt at
+connect included, and restores the behaviour from before this feature exactly: no loads
+or reads, no keep-alive on a
 call's turns, and Ollama keeps the model as it would for any chat. It is the switch to
 reach for if the loading itself ever misbehaves.
 
@@ -247,8 +250,20 @@ or ends a call.
 
 **Before the model answers a caller, the app searches the line's project with the
 caller's words,** and hands what it finds to the model as the result of a document
-search made on its behalf. The document tools stay offered, so the model can still
+search made on its behalf. The search tool stays offered, so the model can still
 search again in its own words when that first search doesn't answer the question.
+
+**A call is offered the search and the clock, nothing else.** The model on a call can
+search the line's documents and ask the time (for "are you open right now?"). The
+chat's other document tools, reading pages, extracting from many pages and a
+document's full outline, are not offered on a call: a caller has no use for them, and
+every question is searched first anyway. Their descriptions were a large part of what
+a call's first answer reads (the four document and clock tools took 1,027 of a line's
+2,145 prompt tokens: the search 343, page reading 201, extraction 385, the clock 98),
+and leaving them out, with the rules' sentences about them, takes about 640 tokens off
+every call's prompt. When the project's list of documents is too long to show every
+outline, it says so on a call without offering the outline tool. The chat and Talk
+still offer every tool.
 
 **Why.** A call runs the model with thinking off, to keep the caller's wait short. A
 small model such as gemma4:e4b then searches reliably only for the first thing a caller
@@ -282,12 +297,8 @@ recognizer that writes no punctuation, such as a Google recognizer whose punctua
 turned off in Google's console, never plays it, and its callers wait through those
 seconds in silence.
 
-**The first answer after the model loads is slower still.** The model then has none of
-the line's prompt in memory and reads all of it, about 2,000 tokens: about 21 seconds for
-gemma4:e4b on a CPU-only machine, with or without this search. The caller hears the
-filler and "Still checking", then silence until the answer. Later questions in the call
-reuse what was read, and so does the next call on the same line that day while Ollama
-still holds it (other use of the model can push it out).
+**The first answer of a call can be slower still,** when Ollama doesn't hold the line's
+prompt yet: see [A call's first answer](#a-calls-first-answer).
 
 **Turning it off.** `CHAT_PREFETCH=off` turns the search off for phone lines too; the
 model is then left to search for itself, with the added sentence on every turn. The
@@ -295,6 +306,63 @@ default, `auto`, searches on every phone turn. In the chat, `auto` still leaves 
 that has the document tools to search for itself. `CHAT_PREFETCH_MIN_SCORE` (0.6) and
 `CHAT_PREFETCH_K` (4) set what the search keeps, for phone lines as for the chat (see
 `.env.example`).
+
+## A call's first answer
+
+**What the model reads first.** Before it writes a word, the model reads the line's whole
+prompt: the profile and rules, the list of the project's documents, the tools'
+descriptions, then the caller's words and the app's search. Ollama keeps what it has
+read, so each later question of a call reads only what is new: about 240 tokens with the
+app's search, about 3 seconds for gemma4:e4b on a CPU-only machine. The first question
+of a call whose prompt Ollama doesn't hold yet reads all of it. For a line on a
+one-document project that is about 1,500 tokens, about 18 seconds on the same machine
+(about 2,150 tokens and 25 to 32 seconds while calls were also offered the page and
+extract tools). It happens on the first call after the model loads, after the line's
+project, profile or documents change, and on the first call of a day (the rules carry
+the date).
+
+**Reading the prompt while the welcome plays.** So when a call is let in, the app asks
+Ollama to read the line's prompt at once: everything the first question will send before
+the caller's words, built by the same code that builds the question's request. The
+caller hears the welcome and asks while Ollama reads, and the first answer then reads
+only the caller's words and the search. Measured with the question sent 9 seconds after
+the call connected (a 4.3-second welcome, a 3-second question, the 0.7-second pause and
+recognition), the model's first words came 9 to 11 seconds after the question was sent,
+against 17 to 19 seconds without the read. The read itself took about 15 seconds, so it
+wasn't finished when the question came, and the answer waited for the rest of it; a
+longer welcome hides more. While the answer waits, a caller whose words are a question
+hears "Let me check" and, after `PHONE_CHECKING_S`, "Still checking", then silence until
+the answer. The read is not a turn: nothing is billed, stored or shown,
+and the one word it generates is thrown away. If the call ends first, the read is given
+up. It loads the model too, with the same settings as the call's turns.
+
+**When it helps less.**
+
+- The reuse was measured on gemma4:e4b, whose prompt puts the tools before the
+  conversation. A model whose chat template puts the tool list inside the last user
+  message (Llama 3.x, read from its template, not run) reuses only the system message:
+  its tools are read again with the question.
+- Ollama answers one request at a time per slot, and a slot holds the prompt it read
+  last. A chat on the same model, or a call on another line, between the read and the
+  question puts another prompt there. The Ollama measured here (0.40.13, gemma4:e4b)
+  also keeps earlier prompts in memory: the same prompt, sent again after another had
+  pushed it out, came back in a fifth of a second. A read pushed out and then followed
+  by the question was not measured; an Ollama that keeps no earlier prompts reads the
+  line's prompt again.
+- With more than one parallel slot (`OLLAMA_NUM_PARALLEL` above 1), a question that comes
+  while the read is still running may go to another slot and not reuse it, and the two
+  then share the CPU, so the first answer may come later than with no read at all (not
+  verified).
+- The read uses the CPU while the welcome plays, beside the recognizer that hears the
+  caller's question. On a busy CPU-only machine the question's transcript may come a
+  little later (not measured).
+- Only a model on an Ollama you host is read ahead, as for loading.
+  `PHONE_MODEL_KEEP_ALIVE=0` turns the read off with the rest.
+
+**In the log.** Each call's read is one line, `phone call <id>: its line's prompt was read
+ahead in 14.8 s`. A read that fails is one warning per outage (`phone line <id>: model
+<model> didn't read the line's prompt ahead of the first question (...)`), and the first
+answer then reads the prompt itself.
 
 ## Limits
 
@@ -444,10 +512,12 @@ speech engine (**Admin → Overview**) and the model.
 recognizer, the model's first sentence and the voice's first clause. A model that is too
 slow for a phone is the usual cause; a smaller or hosted model, a faster voice (Chirp),
 and `SPEECH_WINDOW_SILENCE_MS` are the levers (the last is shared with Talk). If only the
-first answer of a call is late, by tens of seconds on a CPU-only machine, the model was
-loading: the log says why it wasn't kept loaded (`pushed out of memory`, `couldn't be
-loaded`, or `aren't kept loaded`, which names the setting that turned it off); see [The line's model stays
-loaded](#the-lines-model-stays-loaded).
+first answer of a call is late, the model was reading the line's prompt for the first
+time, or loading: see [A call's first answer](#a-calls-first-answer) and [The line's model
+stays loaded](#the-lines-model-stays-loaded). The log says how long each call's read took
+(`its line's prompt was read ahead in …`) and why a model wasn't kept loaded (`pushed out
+of memory`, `couldn't be loaded`, or `aren't kept loaded`, which names the setting that
+turned it off).
 
 **A TV or a busy room beside the caller: babble mode.** Sound at talking level over the
 line counts as someone talking. So at first the app does what Talk does: when the sound

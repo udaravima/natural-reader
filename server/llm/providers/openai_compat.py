@@ -104,6 +104,12 @@ class OpenAICompatProvider:
     async def in_memory(self) -> dict[str, int | None] | None:
         return None
 
+    async def read_prompt(self, model: str, messages: list[Message], tools: list[ToolSpec],
+                          settings: CallSettings) -> bool:
+        """An OpenAI-compatible API has no request that only reads a prompt, and a hosted one could charge for any
+        request: nothing is sent."""
+        return False
+
     async def capabilities(self, model: str) -> Capabilities:
         return self._features.apply(model, await self._listed_capabilities(model))
 
