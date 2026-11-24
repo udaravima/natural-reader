@@ -54,6 +54,16 @@ NUMBERS = {w: str(n) for n, w in enumerate(
     "eighteen nineteen twenty".split())}
 NUMBERS.update({"thirty": "30", "forty": "40", "fifty": "50"})
 CALL_TIMEOUT_S = 900          # a CPU-only machine hears, thinks and speaks slowly
+# The fake PBX ends an answer after QUIET_S of quiet once its first sound has come. The line's filler and "Still
+# checking" clips play before the answer (the app's search found passages for the question, R18.3), and on a cold
+# first turn a CPU-only machine then reads the ~2,000-token prompt for about 20-25 s before the first word. The same
+# quiet rule ends the greeting, so the greeting's timeout must cover the greeting itself plus QUIET_S.
+QUIET_S = 25
+GREETING_TIMEOUT_S = 60
+# The fake PBX asks its question QUIET_S after the welcome goes quiet, and the line's idle clock (PHONE_IDLE_S) runs
+# from that same moment. The question must be heard (about 1 s: its first word, then the VAD's start) before the
+# clock runs out, or "Are you still there?" plays first and the recording no longer starts with the answer.
+assert QUIET_S + 1 < PhoneConfig(listen=None, allow=(), pbx_address=None).idle_s, "the line would ask if anyone is on"
 
 
 async def library_project(conn):
@@ -114,7 +124,8 @@ async def test_a_real_call_is_greeted_heard_and_answered(pool, tmp_path, monkeyp
 
         pbx = await asyncio.create_subprocess_exec(
             sys.executable, str(ROOT / "scripts" / "phone_fake_pbx.py"), line.id, str(FIXTURES / "question1.wav"),
-            "--address", address, "--out", str(tmp_path), "--quiet-s", "5", "--answer-timeout", str(CALL_TIMEOUT_S),
+            "--address", address, "--out", str(tmp_path), "--quiet-s", str(QUIET_S),
+            "--greeting-timeout", str(GREETING_TIMEOUT_S), "--answer-timeout", str(CALL_TIMEOUT_S),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         out, _ = await asyncio.wait_for(pbx.communicate(), CALL_TIMEOUT_S)
         printed = out.decode()

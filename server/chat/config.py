@@ -20,7 +20,8 @@ class ChatConfig:
                                             # document), "on" always (as a search_documents result when it has
                                             # tools), "off" never. Measured 2026-10-05 on gemma4:e4b (local
                                             # CPU): on 5/9, off 9/9 and no slower — handed passages, it
-                                            # answered from them instead of searching.
+                                            # answered from them instead of searching. A phone turn takes
+                                            # "auto" as "on" (context.prefetch_mode, R18.1).
     prefetch_min_score: float = 0.6        # cosine similarity; >= 1 also disables prefetch. Measured
                                             # 2026-10-05 (nomic-embed-text, v2.3 prefixes; CHAT_WITH_PDF
                                             # §6.5): a short user guide's answering passages scored

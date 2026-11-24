@@ -45,6 +45,13 @@ from .tools.search_documents import PREFETCH_CALL_ID, passages_result
 logger = logging.getLogger(__name__)
 
 PASSAGE_TEXT_CAP = 1500   # characters per prefetched passage
+# Added to the request's copy of a phone caller's words, in brackets after a blank line, when the turn offers the
+# document tools and the prefetch kept nothing or didn't run (R18.2). A follow-up such as "Yeah, sure." names no topic,
+# so the search keeps nothing for it, and gemma4:e4b with thinking off then promises to check instead of checking.
+# Measured on a real call's history: it searched 5/5 with this sentence and 1/5 without, and added no tool calls to
+# greetings, thanks or a bare "yes" (0/15). Never stored: the saved message is what the caller said.
+LOOK_IT_UP_NOTE = ("Before you answer a question about the documents, look it up with a tool in this turn; what you "
+                   "said earlier in the call is not a source.")
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 # A text file whose real values were agreed for one model, in a turn for another (final fix wave, C1).
 _HELD_MARKER = "[{name}: not shown to this model. Its real values were agreed for another model.]"
@@ -346,13 +353,25 @@ class BuiltContext:
     file_texts: tuple[str, ...] = ()        # every text file in the prompt: web search must not send them out
 
 
+def prefetch_mode(cfg: ChatConfig, channel: str) -> str:
+    """CHAT_PREFETCH for a turn on `channel`. "auto" (the default) prefetches only for a model with no document tools;
+    one that has them searches for itself (gemma4:e4b, handed passages, answered from them instead: 5/9 against 9/9
+    without, 2026-10-05). On a phone turn "auto" is "on" (R18.1, 2026-11-23): a call runs with thinking off, and
+    gemma4:e4b then stops calling search_documents once the call holds one plain exchange, and answers from a heading
+    in the project map. A real call got no fact in 10 turns; handed the app's search it answered 60/60 in one step.
+    "off" stays off everywhere: the deployer's choice."""
+    return "on" if cfg.prefetch == "auto" and channel == "phone" else cfg.prefetch
+
+
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
-    # "auto" (the default): only for a model with no document tools; one that
-    # has them searches for itself (gemma4:e4b, handed passages, answered from
-    # them instead: 5/9 against 9/9 without, 2026-10-05).
     has_doc_tools = any(t.name == "search_documents" for t in turn.tools)
-    runs = cfg.prefetch == "on" or (cfg.prefetch == "auto" and not has_doc_tools)
+    mode = prefetch_mode(cfg, turn.channel)
+    runs = mode == "on" or (mode == "auto" and not has_doc_tools)
     pre = await prefetch(list(turn.scope), turn.text, cfg) if runs else Prefetch()
+    # R18.2, R18.5: a phone turn with the document tools and no passages asks for a look-up in this turn. Only with
+    # the tools: without them the note would ask for something the model can't do, and with tools off the text probe
+    # is off too, so a tool call written as text would be read down the line.
+    look_it_up = f"({LOOK_IT_UP_NOTE})" if turn.channel == "phone" and has_doc_tools and not pre.passages else ""
     # v2.4 Task B: with the search tool offered, the passages arrive as that
     # tool's result (a call the app made for the model), not inside the
     # user's message, where a PDF's planted instruction would speak with the
@@ -371,7 +390,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         volatile = _passages_block(pre.passages, list(turn.scope))
     exchange += turn.app_exchange
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
-                         prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
+                         prefetch=mode == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
                          placed=turn.placed, persona=turn.persona, assistant_name=turn.assistant_name,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None),
@@ -380,7 +399,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     # The new message's text files cost their characters; only images and audio take the flat estimate.
     current_files = sum(len(_attachment_text(a)) for a in turn.attachments if a.kind == "text")
     fixed_chars = (len(system.content) + len(volatile) + 2 + len(turn.text) + current_files
-                   + sum(len(m.content) for m in exchange))
+                   + (len(look_it_up) + 2 if look_it_up else 0) + sum(len(m.content) for m in exchange))
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars,
                                                     sum(1 for a in turn.attachments if a.kind != "text"),
                                                     turn.window, cfg, turn.model)
@@ -423,12 +442,13 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     # The new message: the volatile block first, then what the user typed. An
     # unanswered user turn at the end of history (its reply failed) joins it
     # between the two, so the prompt still ends on exactly one user message
-    # that leads with the volatile block.
+    # that leads with the volatile block. A phone turn's look-it-up note comes
+    # last (the two are never both there: the note is for a turn without passages).
     current = Message("user", turn.text, attachments=turn.attachments)
     if history_messages and history_messages[-1].role == "user":
         current = _merge_same_role([history_messages.pop(), current])[0]
     current = inline_text_files(current)
-    current = Message("user", "\n\n".join(c for c in (volatile, current.content) if c),
+    current = Message("user", "\n\n".join(c for c in (volatile, current.content, look_it_up) if c),
                       attachments=current.attachments)
     file_texts = tuple([_attachment_text(blobs[(i.stored.id, a["ordinal"])]) for i in items for a in i.keep
                         if a.get("kind") == "text" and (i.stored.id, a["ordinal"]) in blobs]

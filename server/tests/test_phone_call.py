@@ -438,6 +438,64 @@ def test_checking_plays_once_when_a_tool_runs_long():
     assert len(c.frames_of("checking")) == 20                  # once: one 0.4 s clip, not two
 
 
+# What run_turn sends before its first step on a line's turn: the scope note always (a line's chat is a project
+# chat), and the prefetch note only when the app's own search kept passages (chat/context.py).
+SCOPE = {"kind": "scope", "documents": [{"ref": 1, "docId": "d" * 64, "name": "Front desk hours.md"}]}
+CONTEXT_HIT = {"type": "data-context", "items": [
+    {"kind": "prefetch", "count": 2, "topScore": 0.772, "documents": [
+        {"docId": "d" * 64, "docName": "Front desk hours.md", "count": 2, "pages": [1]}]}, SCOPE]}
+CONTEXT_MISS = {"type": "data-context", "items": [SCOPE]}
+
+
+def test_a_question_the_apps_search_found_gets_the_filler_and_the_checking_clip_once():
+    # R18.3: a prefetch hit costs about 3 s more before the first word (the exchange's prompt time on a CPU), with no
+    # tool call to start the filler. A question ("?", the recognizer's punctuation) is treated as a tool start.
+    c = call([*speech(1.0, 2.0), (12.0, HungUp("caller"))], heard=[words("On weekdays, what are the open hours?")],
+             turns=[[CONTEXT_HIT, 5.0, *says("We open at half past eight."), FINISH]])
+    assert c.played() == ["greeting", "filler0", "checking", "We open at half past eight."]
+    assert c.starts("filler0") == pytest.approx(2.31, abs=0.011)
+    assert c.starts("checking") == pytest.approx(2.3 + 4.0, abs=0.021)
+    assert len(c.frames_of("checking")) == 20                  # once
+    assert c.outcome.stats[0]["first_audio_at"] == pytest.approx(c.starts("filler0"))
+
+
+def test_words_the_apps_search_found_something_for_but_no_question_get_no_filler():
+    # "Good morning." clears the search's floor on a small document, but a greeting must never hear "Let me check".
+    c = call([*speech(1.0, 2.0), (12.0, HungUp("caller"))], heard=[words("Good morning.")],
+             turns=[[CONTEXT_HIT, 5.0, *says("Good morning to you."), FINISH]])
+    assert c.played() == ["greeting", "Good morning to you."]
+
+
+def test_a_found_question_then_a_real_tool_call_plays_one_filler_per_turn():
+    c = call([*speech(1.0, 2.0), *speech(10.0, 11.0), (20.0, HungUp("caller"))],
+             heard=[words("Can I renew a book online?"), words("And what does a late book cost?")],
+             turns=[[CONTEXT_HIT, 1.0, TOOL, 1.0, TOOL_DONE, *says("Only by phone."), FINISH],
+                    [CONTEXT_HIT, 1.0, *says("A dollar twenty-five a day."), FINISH]])
+    # one filler for the first turn, though its model searched again; the second turn has the other filler
+    assert c.played() == ["greeting", "filler0", "Only by phone.", "filler1", "A dollar twenty-five a day."]
+
+
+def test_a_caller_who_cuts_in_before_a_found_questions_checking_clip_never_hears_it():
+    # The timer starts at data-context, before the model's silent read of the passages (about 3 s warm, about 21 s
+    # cold): the moment a caller is most likely to say "hello?". Their cut closes the turn, and the timer with it, so
+    # "checking" (due at about 6.3 s) never plays into the next turn.
+    c = call([*speech(1.0, 2.0), *speech(4.0, 4.6), (16.0, HungUp("caller"))],
+             heard=[words("Is the front desk open on Sunday?"), words("Hello, are you there")],
+             turns=[[CONTEXT_HIT, 10.0, *says("It is closed on Sunday."), FINISH],
+                    [*says("Yes, I'm here."), FINISH]])
+    assert c.played() == ["greeting", "filler0", "Yes, I'm here."]
+    assert c.chat.begins[1]["text"] == "Hello, are you there" and len(c.chat.begins) == 2
+
+
+def test_a_question_the_apps_search_missed_waits_for_a_tool_as_before():
+    c = call([*speech(1.0, 2.0), *speech(8.0, 9.0), (16.0, HungUp("caller"))],
+             heard=[words("Yeah, sure?"), words("Is there parking?")],
+             turns=[[CONTEXT_MISS, 1.0, TOOL, 1.0, TOOL_DONE, *says("We open at nine."), FINISH],
+                    [CONTEXT_MISS, 1.0, *says("The documents don't say."), FINISH]])
+    assert c.played() == ["greeting", "filler0", "We open at nine.", "The documents don't say."]
+    assert c.starts("filler0") == pytest.approx(3.31, abs=0.011)    # at the tool, a second after the turn began
+
+
 @pytest.mark.parametrize("what", [hiss(), words("opens at nine every weekday")], ids=["noise", "echo"])
 def test_noise_or_echo_resumes_the_same_reply(what):
     reply = "The library opens at nine every weekday morning."

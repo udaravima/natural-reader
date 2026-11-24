@@ -44,6 +44,19 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **A phone line now looks up its documents for every question.** Before,
+  after the first exchange of a call it often offered to look something up
+  ("Would you like me to check?") instead of doing it, or answered from a
+  heading in the project's list of documents: in one test call it gave no
+  fact from its document in 10 turns. Now the app searches the line's project
+  with the caller's words before the model answers, and hands it what it
+  finds; when that search keeps nothing (a "Yeah, sure."), the model is asked
+  to look the answer up itself in this turn. That request is never stored. A
+  question that finds passages costs about 3 seconds more before the first
+  word on a CPU-only machine, and the caller hears the filler phrase while the
+  model reads them. `CHAT_PREFETCH=off` turns the search off for phone lines
+  too; in the chat, `auto` is unchanged. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#how-a-line-finds-its-answers).
 - **A phone line's first answer no longer waits for its model to load.** Ollama
   unloads a model after 5 idle minutes, and phone turns asked it to keep none,
   so the first caller after a quiet spell waited for the model to load again

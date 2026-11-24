@@ -25,7 +25,7 @@ from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from server import db
 from server.auth.users import SEED_ADMIN_ID
-from server.chat import orchestrator
+from server.chat import context as chat_context, orchestrator
 from server.llm import router as llm_router
 from server.llm.types import Finish, TextDelta, Usage
 from server.phone import audiosocket, service, store, vad, voice
@@ -34,7 +34,8 @@ from server.phone.config import PhoneConfig
 from server.phone.media import Audio, HungUp
 from server.phone.segmenter import SpeechEnded, SpeechStarted
 from server.phone.store import Clip, LineVoice
-from server.services import chat_options, console_settings, inference_budget, model_settings
+from server.services import (chat_options, console_settings, embedding_state, embeddings, inference_budget,
+                             model_settings)
 from server.speech import service as speech_service
 from server.speech.base import EngineStatus, Transcript
 from server.tests import seed
@@ -880,6 +881,114 @@ async def test_hangup_mid_turn_spends_nothing_more(pool, real_call):
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT active_turn_id FROM chat_sessions WHERE id = %s", (call["session_id"],))
         assert (await cur.fetchone())[0] is None          # the claim was given back before handle() returned
+
+
+# --- Task 18: a line looks its answers up (R18.1-R18.3) ---
+
+HOURS = "On Saturday the front desk is open from 9 am to 1 pm."
+# The look-it-up note's exact words (chat/context.py LOOK_IT_UP_NOTE), as the investigator tested them.
+LOOK_IT_UP = ("Before you answer a question about the documents, look it up with a tool in this turn; what you said "
+              "earlier in the call is not a source.")
+FILLER0, FILLER1 = 7, 8                                  # clip_rows' two filler tones
+
+
+def axis(i: int) -> list[float]:
+    """A unit vector along axis `i`, as embed_query returns one: two different axes score 0, the same axis 1."""
+    return [1.0 if n == i else 0.0 for n in range(embeddings.EMBEDDING_DIM)]
+
+
+def unit_vector(i: int) -> str:
+    """axis(i) as pgvector text, for a chunk row."""
+    return "[" + ",".join(str(x) for x in axis(i)) + "]"
+
+
+async def make_line_with_hours(pool):
+    """A line whose project holds one indexed document with one passage, Saturday's hours, along axis 0. The real
+    search runs over it; only the question's embedding is faked."""
+    line = await make_line(pool)
+    doc = secrets.token_hex(32)
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT created_by FROM phone_lines WHERE id = %s", (line.id,))
+        owner = str((await cur.fetchone())[0])
+        await seed.seed_doc(conn, doc, owner, file_name="Front desk hours.md", file_type="md", state="indexed")
+        # Indexed under the current embedder, so the scope keeps it "indexed" rather than queueing a rebuild.
+        profile = embeddings.profile_of(await embedding_state.current(conn))
+        await conn.execute("UPDATE documents SET page_count = 1, embedding_profile = %s WHERE doc_id = %s",
+                           (profile, doc))
+        await conn.execute(
+            "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
+            "VALUES (%s, 0, 1, 'page', %s, 'h0', %s::vector, 'fake')", (doc, HOURS, unit_vector(0)))
+        await seed.place_doc(conn, line.project_id, doc, owner, file_name="Front desk hours.md")
+    return line
+
+
+class SaysInTurn(FakeEars):
+    """The recognizer hearing each clip as the next of `texts`."""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__()
+        self.texts = list(texts)
+
+    async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
+        await super().transcribe(audio, mime, language)
+        return Transcript(self.texts.pop(0), "en", 1.0, no_speech=0.02, avg_logprob=-0.2)
+
+
+async def test_after_small_talk_a_question_still_reaches_the_model_with_its_passages(pool, real_call, monkeypatch):
+    # R18.1-R18.3 through the real chat engine and the real search, with a fake model. A real call got no fact in 10
+    # turns because, after one plain exchange, the model stopped searching; now the app searches every phone turn.
+    for name in ("CHAT_PREFETCH", "CHAT_PREFETCH_MIN_SCORE", "CHAT_PREFETCH_K"):
+        monkeypatch.delenv(name, raising=False)           # the defaults: auto, 0.6, 4
+
+    async def embed(text: str) -> list[float]:
+        return axis(0 if "Saturday" in text else 1)   # the question finds the hours (score 1); small talk, nothing (0)
+    monkeypatch.setattr(chat_context, "embed_query", embed)
+    real_call.ears = SaysInTurn(["Good morning.", QUESTION])
+    router = real_call.router = FakeRouter(steps=[reply("Good morning to you."), reply("We open at nine.")])
+    line = await make_line_with_hours(pool)
+    media = FakeMedia(line.id, say=[(0.3, START), (0.4, END), (2.0, START), (2.1, END)])
+    running = asyncio.create_task(service.PhoneService(CFG).handle(media))
+
+    async def answered():
+        calls = await calls_of(pool, line.id)
+        return bool(calls) and [m[1:] for m in await messages_of(pool, calls[0]["session_id"])][-1:] == [
+            ("We open at nine.", "complete")]
+    await until(answered)
+    media.caller_hangs_up()
+    await asyncio.wait_for(running, 5)
+
+    # Turn 1: small talk the search keeps nothing for, so the request's copy of the caller's words asks for a look-up.
+    first, second = router.calls
+    assert "search_documents" in first["tools"]
+    assert [m.role for m in first["messages"]] == ["system", "user"]
+    assert first["messages"][-1].content == "Good morning.\n\n(" + LOOK_IT_UP + ")"
+    # Turn 2: the history is what was said, with no note; the passages arrive as the app's own search, after the question.
+    system, *rest = second["messages"]
+    assert [m.role for m in rest] == ["user", "assistant", "user", "assistant", "tool"]
+    assert [m.content for m in rest[:3]] == ["Good morning.", "Good morning to you.", QUESTION]
+    assert rest[3].tool_calls[0].name == "search_documents" and HOURS in rest[4].content
+    assert "appears as a search_documents call just before your turn" in system.content
+    assert not any(LOOK_IT_UP in m.content for m in second["messages"])
+    # R18.3: the question the search answered got the filler (the call's first: tone 7), the small talk none.
+    assert FILLER0 in media.heard() and FILLER1 not in media.heard()
+
+    # The note is never stored: not in the saved messages, the transcript the console shows, or the session's log.
+    [call] = await calls_of(pool, line.id)
+    assert await messages_of(pool, call["session_id"]) == [
+        ("assistant", GREETING, "complete"), ("user", "Good morning.", "complete"),
+        ("assistant", "Good morning to you.", "complete"), ("user", QUESTION, "complete"),
+        ("assistant", "We open at nine.", "complete")]
+    async with pool.connection() as conn:
+        transcript = (await store.get_call(conn, call["id"]))["messages"]
+        cur = await conn.execute(
+            "SELECT count(*) FROM chat_messages WHERE session_id = %s AND (content LIKE %s OR doc_context::text LIKE %s "
+            "OR tool_calls::text LIKE %s)", (call["session_id"], *["%look it up%"] * 3))
+        stored = (await cur.fetchone())[0]
+        cur = await conn.execute("SELECT count(*) FROM chat_events WHERE session_id = %s AND message LIKE %s",
+                                 (call["session_id"], "%look it up%"))
+        logged = (await cur.fetchone())[0]
+    assert [m["content"] for m in transcript if m["role"] == "user"] == ["Good morning.", QUESTION]
+    assert (stored, logged) == (0, 0)
 
 
 # --- start and stop ---

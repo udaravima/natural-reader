@@ -10,6 +10,8 @@ over the answer cuts it off), run on the server and fed by your phone system.
 - [Setting one up](#setting-one-up)
 - [The Asterisk side](#the-asterisk-side)
 - [Settings](#settings)
+- [The line's model stays loaded](#the-lines-model-stays-loaded)
+- [How a line finds its answers](#how-a-line-finds-its-answers)
 - [Limits](#limits)
 - [Privacy and security](#privacy-and-security)
 - [Trying it without a phone system](#trying-it-without-a-phone-system)
@@ -240,6 +242,59 @@ To keep both loaded, give Ollama the memory, or put the lines on one model.
 trying every 2 minutes; when it's back, it says nothing more. A model the server refuses (a
 404, say, for a model deleted from it) gets one warning of its own. A load never holds up
 or ends a call.
+
+## How a line finds its answers
+
+**Before the model answers a caller, the app searches the line's project with the
+caller's words,** and hands what it finds to the model as the result of a document
+search made on its behalf. The document tools stay offered, so the model can still
+search again in its own words when that first search doesn't answer the question.
+
+**Why.** A call runs the model with thinking off, to keep the caller's wait short. A
+small model such as gemma4:e4b then searches reliably only for the first thing a caller
+asks. Once the call holds one plain exchange (a "Good morning" answered without looking
+anything up, as a greeting should be), it follows that pattern. It offers to check
+instead of checking ("Would you like me to look that up?"), or it answers from a heading
+in the project's list of documents, which names a topic but doesn't say what it is. In
+one test call the line gave no fact from its document in 10 turns. Handed the app's
+search, the same model answered all 60 replayed questions right.
+
+**When the search keeps nothing.** A follow-up such as "Yeah, sure." names no topic, so
+nothing it matches clears the score floor. Then the model's copy of the caller's words
+gets one sentence added: look the answer up with a tool in this turn, because what was
+said earlier in the call is not a source. With it the model searched 5 times in 5, and
+without it once. The sentence is added only when the model is offered the document
+tools, and it is never stored: the transcript and the chat hold only what the caller
+said.
+
+**What it costs.** Whenever the search keeps passages, the model reads them before it
+answers, so the first word comes about 3 seconds later than for a reply that looks
+nothing up (gemma4:e4b on a CPU-only machine). On that machine a reply that looked
+nothing up was first heard about 3 to 5 seconds after the caller stopped speaking, so a
+found answer starts roughly 6 to 8 seconds after (an estimate from those two
+measurements). The search itself takes about 20 ms. A greeting can clear the score floor
+too ("Good morning" did, just, on a one-page document), so it may wait the same 3
+seconds longer. When the caller's words are a question (the recognizer wrote a "?"), the
+caller hears the filler phrase about 1.5 seconds after they stop, while the model reads,
+and "Still checking" after `PHONE_CHECKING_S`, as for a tool. Other words get no filler,
+so "Good morning" never hears "Let me check". The filler depends on that "?": a
+recognizer that writes no punctuation, such as a Google recognizer whose punctuation is
+turned off in Google's console, never plays it, and its callers wait through those
+seconds in silence.
+
+**The first answer after the model loads is slower still.** The model then has none of
+the line's prompt in memory and reads all of it, about 2,000 tokens: about 21 seconds for
+gemma4:e4b on a CPU-only machine, with or without this search. The caller hears the
+filler and "Still checking", then silence until the answer. Later questions in the call
+reuse what was read, and so does the next call on the same line that day while Ollama
+still holds it (other use of the model can push it out).
+
+**Turning it off.** `CHAT_PREFETCH=off` turns the search off for phone lines too; the
+model is then left to search for itself, with the added sentence on every turn. The
+default, `auto`, searches on every phone turn. In the chat, `auto` still leaves a model
+that has the document tools to search for itself. `CHAT_PREFETCH_MIN_SCORE` (0.6) and
+`CHAT_PREFETCH_K` (4) set what the search keeps, for phone lines as for the chat (see
+`.env.example`).
 
 ## Limits
 

@@ -28,7 +28,8 @@ so that doesn't end babble mode; only QUIET_S with no run open does. That quiet 
 normal mode (R16.3), so two coughs a minute apart never make babble mode. An echo, a misheard clip or a misfire
 leaves the count as it is.
 The phone adds: words written before a tool are spoken at once (`text-end`); a filler when a tool starts with nothing
-said yet, and "still checking" once if no text follows for `checking_s`; `sorry` for a failed or empty answer;
+said yet, or when the app's own search found passages for a question (R18.3), and "still checking" once if no text
+follows for `checking_s`; `sorry` for a failed or empty answer;
 "are you still there?" and then goodbye after silence; goodbye at the call's time limit; `closed` when the budget runs
 out. An ending can't be interrupted: its clip plays out, the pacer stops, then the call hangs up.
 
@@ -656,6 +657,10 @@ class CallSession:
                         self._cut(turn, splitter.end_step(), pieces)
                     elif kind == "tool-input-available":
                         self._tool_started(turn)
+                    elif kind == "data-context" and self._found_for_question(turn, event):
+                        # R18.3: the app's own search kept passages, so the first word comes about 3 s later (the
+                        # exchange's prompt time on a CPU) with no tool call to cover it: the same filler and timer.
+                        self._tool_started(turn)
                     elif kind == "error":
                         turn.error = str(event.get("code") or "error")
                         logger.info("phone call %s: the turn ended with %s", self._session_id, turn.error)
@@ -676,7 +681,17 @@ class CallSession:
             turn.pieces += 1
             pieces.put_nowait(piece)
 
+    @staticmethod
+    def _found_for_question(turn: _Turn, event: dict) -> bool:
+        """The turn's opening notes say the app's own search kept passages (a `prefetch` note; a miss sends none),
+        and the caller asked a question: a "?" from the recognizer's punctuation. Without one, a greeting the search
+        also matched (it can clear the floor on a small document) would hear "Let me check"."""
+        found = any(isinstance(item, dict) and item.get("kind") == "prefetch" for item in event.get("items") or ())
+        return found and "?" in turn.text
+
     def _tool_started(self, turn: _Turn) -> None:
+        """A tool started, or the app's search found passages for a question: the filler, if nothing has been said
+        yet, and the "still checking" timer. Each clip plays at most once per turn, however many tools follow."""
         if not turn.filled and turn.pieces == 0:
             turn.filled = True
             if self._turn_clip(turn, "filler", self._fillers):
