@@ -128,7 +128,9 @@ def test_google_overlay_mounts_the_key_read_only_and_points_the_app_at_it(tmp_pa
 def test_podman_never_puts_the_keep_id_backend_in_a_pod(tmp_path):
     # podman-compose puts services in a pod by default, and podman refuses
     # --pod together with --userns (keep-id). Capture the real arguments with
-    # a fake podman: nothing is created.
+    # a fake podman: nothing is created. The fake answers `--version` like the
+    # real one: podman-compose (1.5) compares that version with 4.6.0 before it
+    # waits for a healthy Postgres, and an answer of "[]" crashed it there.
     if not shutil.which("podman-compose"):
         pytest.skip("podman-compose not installed")
     for f in COMPOSE_FILES:
@@ -136,12 +138,15 @@ def test_podman_never_puts_the_keep_id_backend_in_a_pod(tmp_path):
     (tmp_path / "searxng").mkdir()
     calls = tmp_path / "calls"
     fake = tmp_path / "fake-podman"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\necho "[]"\n')
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n'
+                    'case "$1" in --version) echo "podman version 5.7.0"; exit 0;; esac\n'
+                    'echo "[]"\n')
     fake.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
     out = subprocess.run(["podman-compose", "--podman-path", str(fake), "-f", "docker-compose.yml",
                           "-f", "compose.podman.yml", "up", "-d", "--no-build", "backend"],
                          cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
     create = [l for l in calls.read_text().splitlines()
               if l.startswith(("create", "run")) and "natural-reader-backend" in l]
     assert create, out.stderr + calls.read_text()
