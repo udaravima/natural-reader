@@ -58,12 +58,14 @@ console shows it as the call's transcript.
   hear the welcome, read and delete a call and its transcript, delete the line. No
   command line is needed once the listener is on. Admin → **Calls** lists every line's
   calls in one place, and shows a call in progress as it happens ([below](#reading-calls)).
-- **Not yet walked on a real phone line.** The call loop, the AudioSocket adapter and
-  the console are tested, and a recorded question has been put through the whole
-  path with the [fake phone system](#trying-it-without-a-phone-system). A call from a
-  real handset into a real PBX is the next step, so this page states no timings for
-  real lines: measure the first sound on yours (the console lists the slowest one for
-  each call).
+- **Tried on real calls** through Asterisk's AudioSocket, from a phone on a LAN PBX,
+  with the backend on a CPU-only machine. The greeting's first sound came 0.08 s after
+  the PBX answered, and Whisper heard the 8 kHz line well enough to write the greeting
+  down word for word. The first call waited 29.5 s for its first answer, mostly the
+  model reading its prompt for the first time; that is now done while the welcome
+  plays ([A call's first answer](#a-calls-first-answer)). Measure the first sound on
+  yours: the transcript shows each turn's timings beside its words. Key presses are
+  not used yet.
 
 ## Setting one up
 

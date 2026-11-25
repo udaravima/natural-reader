@@ -23,7 +23,7 @@ All notable changes to this project will be documented in this file.
   removing the line from its members closes the line. Phase 1 is English only,
   and the app sends nothing to Asterisk: the admin pastes the lines in.
   `scripts/phone_fake_pbx.py` calls a line the way Asterisk does, for trying a
-  setup without a phone system. Not yet tried on a real phone line. See
+  setup without a phone system. Tried on real calls through Asterisk. See
   [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md).
 - **Google's Chirp 3 HD voices can read the chat and Talk.** A third choice
   under Admin → Chat options → Voice for the chat and Talk, beside Kokoro and
