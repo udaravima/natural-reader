@@ -193,7 +193,7 @@ def test_default_texts_are_the_rulings():
     assert DEFAULT_CLIP_TEXTS["busy"] == ["Sorry, this line is busy. Please call again later."]
     assert DEFAULT_CLIP_TEXTS["still"] == ["Are you still there?"]
     assert DEFAULT_CLIP_TEXTS["filler"] == ["Let me check.", "One moment."]
-    assert set(DEFAULT_CLIP_TEXTS) == {"busy", "closed", "goodbye", "still", "sorry", "filler", "checking"}
+    assert set(DEFAULT_CLIP_TEXTS) == {"busy", "closed", "goodbye", "still", "sorry", "filler"}
 
 
 async def test_render_clips_has_every_kind(monkeypatch):

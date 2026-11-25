@@ -368,10 +368,11 @@ describe('AdminConsole — overview', () => {
 describe('AdminConsole — models', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('has a Models tab after Projects (and Phone lines) and before Documents', () => {
+  it('has a Models tab after Projects (and Phone lines, and Calls) and before Documents', () => {
     mount({ users: [user()], section: null });
     const names = screen.getAllByRole('tab').map((t) => t.textContent);
-    expect(names.indexOf('Models')).toBe(names.indexOf('Phone lines') + 1);
+    expect(names.indexOf('Calls')).toBe(names.indexOf('Phone lines') + 1);
+    expect(names.indexOf('Models')).toBe(names.indexOf('Calls') + 1);
     expect(names.indexOf('Phone lines')).toBe(names.indexOf('Projects') + 1);
     expect(names.indexOf('Documents')).toBe(names.indexOf('Models') + 1);
   });
@@ -428,6 +429,16 @@ describe('AdminConsole — phone lines', () => {
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Spa' } });
     openSection('People');
     expect(await screen.findByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Phone lines.');
+  });
+
+  it('has a Calls section that lists every line\'s calls', async () => {
+    const calls = [{ id: 'c1', lineId: 'l1', lineName: 'Front desk', startedAt: '2026-11-21T14:02:00Z', endedAt: '2026-11-21T14:04:31Z',
+      lengthS: 151, endReason: 'caller', turns: 2, slowestFirstSoundS: 2.9, transcript: true, inProgress: false }];
+    mount({ users: [user()], section: null, extra: (path) => (path.startsWith('/v1/admin/phone/calls?')
+      ? json(200, { calls, next: null }) : phoneRoutes(path)) });
+    openSection('Calls');
+    expect(await screen.findByText('Front desk')).toBeInTheDocument();
+    expect(screen.getByText('Timings appear when the call ends.')).toBeInTheDocument();
   });
 });
 

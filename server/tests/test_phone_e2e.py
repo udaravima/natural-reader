@@ -54,8 +54,8 @@ NUMBERS = {w: str(n) for n, w in enumerate(
     "eighteen nineteen twenty".split())}
 NUMBERS.update({"thirty": "30", "forty": "40", "fifty": "50"})
 CALL_TIMEOUT_S = 900          # a CPU-only machine hears, thinks and speaks slowly
-# The fake PBX ends an answer after QUIET_S of quiet once its first sound has come. The line's filler and "Still
-# checking" clips play before the answer (the app's search found passages for the question, R18.3). In a real call
+# The fake PBX ends an answer after QUIET_S of quiet once its first sound has come. The line's filler
+# clip plays before the answer (the app's search found passages for the question, R18.3). In a real call
 # the read of the line's prompt, started as the call connects (R19.2), is often still running when the question
 # comes, and on a CPU-only machine the first word follows about 10 s later. In this harness the same quiet rule ends
 # the greeting, so the question comes QUIET_S after it, and the read has finished by then. QUIET_S is sized for a run

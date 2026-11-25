@@ -309,20 +309,56 @@ async def close_stale_calls(conn, older_than_s: int) -> int:
     return closed
 
 
-_CALL_COLS = "id, line_id, session_id, started_at, ended_at, end_reason, turns, stats"
+# An open call older than its line's longest call plus this was left by a crash: it is not in progress any more (R11.2).
+LIVE_GRACE_S = 60
+_CALL_COLS = ("c.id, c.line_id, c.session_id, c.started_at, c.ended_at, c.end_reason, c.turns, c.stats, "
+              "(c.ended_at IS NULL AND c.started_at > now() - (l.max_call_s + %s) * interval '1 second')")
+_CALL_FROM = "FROM phone_calls c JOIN phone_lines l ON l.id = c.line_id"
 
 
 def _call(row) -> dict:
-    cid, line_id, session_id, started_at, ended_at, end_reason, turns, stats = row
+    cid, line_id, session_id, started_at, ended_at, end_reason, turns, stats, live = row
     return {"id": str(cid), "line_id": str(line_id), "session_id": session_id, "started_at": started_at,
-            "ended_at": ended_at, "end_reason": end_reason, "turns": turns, "stats": stats}
+            "ended_at": ended_at, "end_reason": end_reason, "turns": turns, "stats": stats, "in_progress": live}
 
 
 async def list_calls(conn, line_id: str, limit: int = 50) -> list[dict]:
     cur = await conn.execute(
-        f"SELECT {_CALL_COLS} FROM phone_calls WHERE line_id = %s ORDER BY started_at DESC, id LIMIT %s",
-        (line_id, limit))
+        f"SELECT {_CALL_COLS} {_CALL_FROM} WHERE c.line_id = %s ORDER BY c.started_at DESC, c.id LIMIT %s",
+        (LIVE_GRACE_S, line_id, limit))
     return [_call(r) for r in await cur.fetchall()]
+
+
+def encode_cursor(call: dict) -> str:
+    """Where the next page of `list_all_calls` starts: the last row's start and id."""
+    return f"{call['started_at'].isoformat()}|{call['id']}"
+
+
+def decode_cursor(text: str) -> tuple[datetime, str] | None:
+    """The (start, id) a cursor names, or None when it isn't one `encode_cursor` made."""
+    when, sep, cid = text.partition("|")
+    try:
+        at = datetime.fromisoformat(when)
+        cid = str(uuid.UUID(cid))
+    except ValueError:
+        return None
+    return (at, cid) if sep and at.tzinfo is not None else None
+
+
+async def list_all_calls(conn, limit: int, before: tuple[datetime, str] | None = None) -> tuple[list[dict], str | None]:
+    """Every line's calls, newest first, with each line's name as `line_name`. `before` is a decoded cursor: only
+    calls after it in that order. Returns the rows and the cursor of the next page (None on the last one)."""
+    where, params = "", [LIVE_GRACE_S]
+    if before is not None:
+        # the order is (started_at DESC, id ASC), so "after" a row is an earlier start, or the same start and a later id
+        where = "WHERE c.started_at < %s OR (c.started_at = %s AND c.id > %s::uuid)"
+        params += [before[0], before[0], before[1]]
+    cur = await conn.execute(
+        f"SELECT {_CALL_COLS}, l.name {_CALL_FROM} {where} ORDER BY c.started_at DESC, c.id LIMIT %s",
+        (*params, limit + 1))
+    rows = await cur.fetchall()
+    calls = [{**_call(r[:-1]), "line_name": r[-1]} for r in rows[:limit]]
+    return calls, (encode_cursor(calls[-1]) if len(rows) > limit else None)
 
 
 async def get_call(conn, call_id: str) -> dict | None:
@@ -332,7 +368,7 @@ async def get_call(conn, call_id: str) -> dict | None:
         uuid.UUID(str(call_id))
     except ValueError:
         return None
-    cur = await conn.execute(f"SELECT {_CALL_COLS} FROM phone_calls WHERE id = %s", (str(call_id),))
+    cur = await conn.execute(f"SELECT {_CALL_COLS} {_CALL_FROM} WHERE c.id = %s", (LIVE_GRACE_S, str(call_id)))
     row = await cur.fetchone()
     if row is None:
         return None

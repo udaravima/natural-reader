@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDay, formatMoment, zoneOptions } from './zoneFormat';
+import { formatClock, formatDay, formatMoment, zoneOptions } from './zoneFormat';
 
 describe('formatDay', () => {
   it('formats a day in the deployment zone', () => {
@@ -47,5 +47,14 @@ describe('formatMoment', () => {
   it('reads an unknown zone as UTC and a non-date as its first 16 characters', () => {
     expect(formatMoment('2026-10-25T20:05:00Z', 'Nope/Nope')).toBe('2026-10-25 20:05');
     expect(formatMoment('not a date at all, really', 'UTC')).toBe('not a date at al');
+  });
+});
+
+describe('formatClock', () => {
+  it('reads the time of day with seconds in the deployment zone', () => {
+    expect(formatClock('2026-10-25T20:00:07Z', 'Asia/Colombo')).toBe('01:30:07');
+    expect(formatClock('2026-10-25T20:00:07Z', 'UTC')).toBe('20:00:07');
+    expect(formatClock('2026-10-25T20:00:07Z', 'Nope/Nope')).toBe('20:00:07');
+    expect(formatClock(new Date('2026-10-25T00:00:00Z'), 'UTC')).toBe('00:00:00');   // midnight is 00, not 24
   });
 });

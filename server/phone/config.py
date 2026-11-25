@@ -23,7 +23,6 @@ class PhoneConfig:
     pbx_address: str | None            # "host:port" the PBX dials (the console's snippet); None = unknown
     max_calls: int = 2                 # calls at once across all lines
     idle_s: float = 30                 # seconds of caller silence before "Are you still there?", and again before hang-up
-    checking_s: float = 4              # seconds a tool may run before the one "still checking" line
     # seconds of unbroken caller sound heard as one clip; longer talk (or a TV, or hold music) is cut into clips this
     # long (R5.8). 30 s is Whisper's own window, and it bounds a call's hearing memory to about 2 MB.
     max_utterance_s: float = 30
@@ -126,7 +125,6 @@ def load_phone_config(env: Mapping[str, str]) -> PhoneConfig:
         pbx_address=pbx,
         max_calls=num("PHONE_MAX_CALLS", d.max_calls, int, 1, 20),
         idle_s=num("PHONE_IDLE_S", d.idle_s, float, 1.0, 600.0),
-        checking_s=num("PHONE_CHECKING_S", d.checking_s, float, 0.5, 60.0),
         max_utterance_s=num("PHONE_MAX_UTTERANCE_S", d.max_utterance_s, float, 5.0, 120.0),
         model_keep_alive_s=duration("PHONE_MODEL_KEEP_ALIVE", d.model_keep_alive_s),
     )

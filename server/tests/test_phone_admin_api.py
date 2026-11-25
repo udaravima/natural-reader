@@ -189,7 +189,8 @@ async def test_members_get_403(member_client):
     for method, path in [("GET", "/status"), ("GET", "/voices"), ("GET", "/lines"), ("POST", "/lines"),
                          ("GET", f"/lines/{lid}"), ("PATCH", f"/lines/{lid}"), ("DELETE", f"/lines/{lid}"),
                          ("POST", f"/lines/{lid}/access"), ("GET", f"/lines/{lid}/clips/greeting"),
-                         ("GET", f"/lines/{lid}/calls"), ("GET", f"/calls/{cid}"), ("DELETE", f"/calls/{cid}")]:
+                         ("GET", f"/lines/{lid}/calls"), ("GET", "/calls"), ("GET", f"/calls/{cid}"),
+                         ("DELETE", f"/calls/{cid}")]:
         r = await member_client.request(method, "/v1/admin/phone" + path, json={} if method != "GET" else None)
         assert r.status_code == 403, (method, path, r.status_code)
 
@@ -699,6 +700,59 @@ async def test_calls_list_and_transcript(admin_client, db_conn, line, finished_c
     unknown = "6f1c2a00-0000-4000-8000-000000000006"
     assert (await admin_client.get(f"/v1/admin/phone/calls/{unknown}")).status_code == 404
     assert (await admin_client.get(f"/v1/admin/phone/lines/{unknown}/calls")).status_code == 404
+
+
+# R21.4: every line's calls in one list, newest first, paged by a cursor.
+
+async def test_all_calls_newest_first_across_lines_and_paged(admin_client, db_conn, world, line):
+    second = (await admin_client.post("/v1/admin/phone/lines", json=_body(world, name="Back desk"))).json()
+    a = await _call(db_conn, line["id"], "s-all-a", seconds_ago=500)
+    b = await _call(db_conn, second["id"], "s-all-b", seconds_ago=400)
+    c = await _call(db_conn, line["id"], "s-all-c", seconds_ago=300)
+    refused = await store.record_refused_call(db_conn, second["id"], "busy")
+    page = (await admin_client.get("/v1/admin/phone/calls", params={"limit": 3})).json()
+    assert [r["id"] for r in page["calls"]] == [refused, c, b]
+    assert page["next"]
+    top = page["calls"][1]
+    assert (top["lineId"], top["lineName"]) == (line["id"], "Front desk")
+    assert page["calls"][2]["lineName"] == "Back desk"
+    # the per-line list's row, plus the line's id and name
+    assert {"startedAt", "endedAt", "lengthS", "endReason", "turns", "slowestFirstSoundS", "transcript",
+            "inProgress"} <= set(top)
+    rest = (await admin_client.get("/v1/admin/phone/calls", params={"limit": 3, "before": page["next"]})).json()
+    assert [r["id"] for r in rest["calls"]] == [a] and rest["next"] is None
+
+
+async def test_all_calls_flags_a_call_in_progress_and_not_a_stale_one(admin_client, db_conn, line):
+    live = await store.open_call(db_conn, await store.get_line(db_conn, line["id"]), session_id="s-live-2", now_ms=T0)
+    rows = (await admin_client.get("/v1/admin/phone/calls")).json()["calls"]
+    assert [(r["id"], r["inProgress"], r["endedAt"]) for r in rows] == [(live, True, None)]
+    await db_conn.execute("UPDATE phone_calls SET started_at = now() - interval '661 seconds' WHERE id = %s", (live,))
+    assert (await admin_client.get("/v1/admin/phone/calls")).json()["calls"][0]["inProgress"] is False
+    # the per-line list says the same
+    assert (await admin_client.get(f"/v1/admin/phone/lines/{line['id']}/calls")).json()[0]["inProgress"] is False
+
+
+async def test_the_transcript_of_a_call_in_progress_reads(admin_client, db_conn, line):
+    live = await store.open_call(db_conn, await store.get_line(db_conn, line["id"]), session_id="s-live-3", now_ms=T0)
+    got = (await admin_client.get(f"/v1/admin/phone/calls/{live}")).json()
+    assert got["endedAt"] is None and got["inProgress"] is True and got["stats"] == []
+    assert [m["role"] for m in got["messages"]] == ["assistant"]       # the greeting is saved at once
+
+
+async def test_a_bad_cursor_is_a_422(admin_client):
+    for bad in ("nope", "2026-13-45T00:00:00Z|x", "", "2026-11-24T10:00:00+00:00|", "2026-11-24T10:00:00|",
+                "6f1c2a00-0000-4000-8000-000000000001", "|6f1c2a00-0000-4000-8000-000000000001"):
+        r = await admin_client.get("/v1/admin/phone/calls", params={"before": bad})
+        assert r.status_code == 422, bad
+
+
+async def test_other_spellings_of_a_uuid_in_a_cursor_are_read_as_that_uuid_not_a_500(admin_client):
+    uid = "6f1c2a00-0000-4000-8000-000000000001"
+    for spelling in (f"urn:uuid:{uid}", f"{{{uid}}}", uid.replace("-", ""), uid.upper()):
+        r = await admin_client.get("/v1/admin/phone/calls", params={"before": f"2026-11-24T10:00:00+00:00|{spelling}"})
+        assert r.status_code == 200, spelling
+    assert store.decode_cursor(f"2026-11-24T10:00:00+00:00|urn:uuid:{uid}")[1] == uid
 
 
 @pytest.fixture

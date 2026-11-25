@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, cleanup, act } from '@testing-library/react';
 import { PhoneLinesSection } from './PhoneLinesSection';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -487,6 +487,58 @@ describe('PhoneLinesSection', () => {
     window.confirm.mockReturnValue(false);
     fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
     await waitFor(() => expect(window.confirm).toHaveBeenCalledWith('Delete Front desk and its 1 call transcript?'));
+  });
+
+  it('shows Refreshing… (disabled) while the calls load, then when they were updated', async () => {
+    const { state } = mount({ props: { zone: 'Asia/Colombo' } });
+    await editFirst();
+    await screen.findByText('caller hung up');
+    expect(screen.getByRole('button', { name: 'Refresh' }).disabled).toBe(false);
+    const normal = apiFetch.getMockImplementation();
+    let release;
+    apiFetch.mockImplementation((...args) => (/\/calls$/.test(args[2])
+      ? new Promise((resolve) => { release = () => resolve(json(200, state.calls)); })
+      : normal(...args)));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect((await screen.findByRole('button', { name: 'Refreshing…' })).disabled).toBe(true);
+    await act(async () => { release(); });
+    expect(screen.getByRole('button', { name: 'Refresh' }).disabled).toBe(false);
+    expect(screen.getByText(/^Updated \d\d:\d\d:\d\d$/)).toBeTruthy();
+  });
+
+  it('puts each turn\'s timing beside its messages when the call has message ids', async () => {
+    const stats = [
+      { stopped_at: 6.2, heard_at: 7.46, first_audio_at: 9.04, error: null, user_message_id: 'u1', assistant_message_id: 'a1' },
+      { stopped_at: 30.0, heard_at: 30.9, first_audio_at: null, error: 'hearing', user_message_id: null, assistant_message_id: null },
+    ];
+    mount({ extra: (path, opts) => (/^\/v1\/admin\/phone\/calls\/[^/]+$/.test(path) && (opts?.method ?? 'GET') === 'GET'
+      ? json(200, { ...call(), lineId: 'line-1', stats, messages: [
+        { id: 'u1', role: 'user', content: 'When do you open?', timestamp: 't', status: 'complete', finishReason: null },
+        { id: 'a1', role: 'assistant', content: 'At nine.', timestamp: 't', status: 'complete', finishReason: 'stop' }] })
+      : undefined) });
+    await editFirst();
+    fireEvent.click(await screen.findByRole('button', { name: 'Transcript' }));
+    const rows = (await screen.findAllByTestId('phone-row')).map((r) => r.textContent);
+    expect(rows).toEqual(['Caller: When do you open?at 0:06', 'Line: At nine.first sound 2.8 s · heard after 1.3 s',
+      'Not heard at 0:30']);
+    expect(screen.queryByTestId('phone-turn-timings')).toBeNull();
+  });
+
+  it('lets the next click retry a transcript whose open failed', async () => {
+    let failing = true;
+    mount({ extra: (path, opts) => {
+      if (!/^\/v1\/admin\/phone\/calls\/[^/]+$/.test(path) || (opts?.method ?? 'GET') !== 'GET') return undefined;
+      if (failing) return refuse(500, 'boom', 'The database is down.');
+      return json(200, { ...call(), lineId: 'line-1', stats: [], messages: [
+        { id: 'm1', role: 'assistant', content: 'Hello.', timestamp: 't', status: 'complete', finishReason: 'stop' }] });
+    } });
+    await editFirst();
+    fireEvent.click(await screen.findByRole('button', { name: 'Transcript' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Transcript' }).disabled).toBe(false));
+    expect(screen.queryByTestId('phone-transcript')).toBeNull();
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));       // the next click retries, not closes
+    expect(await screen.findByTestId('phone-transcript')).toBeTruthy();
   });
 
   it('reloads the list when going back', async () => {

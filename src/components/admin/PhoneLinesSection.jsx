@@ -4,6 +4,8 @@ import { apiFetch } from '../../utils/apiFetch';
 import { phoneApi } from '../../lib/phoneApi';
 import { projectsApi } from '../../lib/projectsApi';
 import { formatMoment } from '../../lib/zoneFormat';
+import { plural } from '../../lib/phoneCalls';
+import { CallFacts, CallTranscript, RefreshControl } from './PhoneCallParts';
 import { SearchableSelect } from '../SearchableList';
 import { firstLocal, modelLabel, useChatModels } from './useChatModels';
 
@@ -24,12 +26,6 @@ const SNIPPET_HINT = "Pick any free extension. The id is this line's.";
 const TOKENS_HINT = "Empty: the server's default. 0: no limit.";
 const welcomeFor = (name) => `Hello, you've reached ${name.trim() || 'this line'}. I'm an automated assistant. How can I help?`;
 
-// Why a call ended (phone_calls.end_reason); null means it hasn't.
-const END_REASONS = {
-  caller: 'caller hung up', limit: 'reached the time limit', idle: 'no one spoke', budget: "line's token budget was used up",
-  busy: 'line was busy', closed: 'line was closed', error: 'something went wrong', shutdown: 'app was restarted',
-};
-
 /** The form's limits, as the API's (maxCallS 60-3600 s, maxCalls 1-20, dailyTokens 0 and up). The first problem, or null. */
 function problemOf(f) {
   const whole = (text) => text.trim() !== '' && Number.isInteger(Number(text));
@@ -46,49 +42,9 @@ function problemOf(f) {
   return null;
 }
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-
 /** A line's profile as the console names it. One switched off in the library is kept by the line, but a call
  * answers as the default profile (the chat skips a disabled one), so the name says so. */
 const profileLabel = (p) => (p.enabled === false ? `${p.name} (switched off: answers as the default profile)` : p.name);
-
-// A turn's error (server/phone/call.py: the stats entry's `error`), in words; any other code is a failed answer.
-// `hearing` (a clip the recognizer failed on) is no turn's error: that entry reads "Not heard".
-const TURN_ERRORS = { voice: 'a sentence was skipped', empty: 'said nothing' };
-
-/**
- * One line per stats entry: "Turn n: first sound X.X s · heard after Y.Y s", then its error in words. The entry's
- * times are seconds since the call started; first sound is first_audio_at - stopped_at (Talk's firstSound), heard
- * after is heard_at - stopped_at (the recognizer's answer). A clip the recognizer failed on is no turn, so it has no
- * number (`n` null): it reads "Not heard", with the first sound of the "sorry" it got, if it got one. Other keys
- * (`babble`) are ignored.
- */
-function turnLine(s, n) {
-  const since = (at) => (typeof at === 'number' && typeof s.stopped_at === 'number' ? (at - s.stopped_at).toFixed(1) : null);
-  const firstSound = since(s.first_audio_at);
-  if (n === null) return firstSound === null ? 'Not heard' : `Not heard: first sound ${firstSound} s`;
-  const heard = since(s.heard_at);
-  const parts = [
-    firstSound !== null && `first sound ${firstSound} s`,
-    heard !== null && `heard after ${heard} s`,
-    s.error && (TURN_ERRORS[s.error] ?? 'the answer failed'),
-  ].filter(Boolean);
-  return `Turn ${n}: ${parts.join(' · ')}`;
-}
-
-/** The transcript's timing lines. Turns are numbered 1, 2, 3; a misheard clip between them takes no number, so a call
- * with 3 turns never shows "Turn 4". (A turn whose claim failed, error `begin`, is numbered: the caller asked, and
- * heard "sorry". The call list's turn count leaves it out.) */
-function turnLines(stats) {
-  let n = 0;
-  return stats.map((s) => turnLine(s, s.error === 'hearing' ? null : (n += 1)));
-}
-
-function lengthText(seconds) {
-  if (seconds == null) return 'in progress';
-  const s = Math.round(seconds);
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} m ${s % 60} s`;
-}
 
 /** The editor's fields for a saved line. Minutes and tokens are text while they are typed. */
 function formOf(line) {
@@ -668,24 +624,46 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
   const [failed, setFailed] = useState(null);
   const [open, setOpen] = useState(null);   // { id, messages, stats } of the transcript on show
   const [busyId, setBusyId] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState(null);
 
   const load = useCallback(async () => {
     try {
       setCalls(await api.calls(lineId));
       setFailed(null);
+      setUpdatedAt(new Date());
     } catch (e) {
       setFailed(e.message);
     }
   }, [api, lineId]);
   useEffect(() => { load(); }, [load, reloadKey]);
 
+  const wanted = useRef(null);   // the transcript on show: a late answer for one that was closed is dropped
+  const openCall = async (id) => {
+    const full = await api.call(id);
+    if (wanted.current !== id) return;
+    setOpen({ id, messages: full.messages, stats: Array.isArray(full.stats) ? full.stats : [] });
+  };
+
+  // The button reads the list again, and the transcript on show: the owner expects both to move.
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await load();
+      if (open) await openCall(open.id).catch(() => {});
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const toggle = async (c) => {
-    if (open?.id === c.id) { setOpen(null); return; }
+    if (open?.id === c.id || wanted.current === c.id) { wanted.current = null; setOpen(null); return; }
+    wanted.current = c.id;
     setBusyId(c.id);
     try {
-      const full = await api.call(c.id);
-      setOpen({ id: c.id, messages: full.messages, stats: Array.isArray(full.stats) ? full.stats : [] });
+      await openCall(c.id);
     } catch (e) {
+      if (wanted.current === c.id) wanted.current = null;   // so the next click retries, not closes
       showToast?.(e.message, 5000);
     } finally {
       setBusyId(null);
@@ -698,7 +676,7 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
     try {
       const { transcripts } = await api.deleteCall(c.id);
       setCalls((all) => all.filter((x) => x.id !== c.id));
-      if (open?.id === c.id) setOpen(null);
+      if (open?.id === c.id) { wanted.current = null; setOpen(null); }
       onDeleted?.(transcripts ?? 0);
       load();
     } catch (e) {
@@ -712,18 +690,15 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-3">
         <span className={`text-xs font-bold ${theme.text}`}>Calls</span>
-        <button type="button" onClick={load} className="min-h-11 md:min-h-0 underline text-[10px]">Refresh</button>
+        <RefreshControl onRefresh={refresh} busy={refreshing} updatedAt={updatedAt} zone={zone} theme={theme} />
       </div>
+      <p className={`text-[10px] ${theme.textMuted}`}>Timings appear when the call ends.</p>
       {failed && <p role="alert" className="text-xs text-red-500">Could not load the calls: {failed}</p>}
       {calls?.length === 0 && <p className={`text-[10px] ${theme.textMuted}`}>No calls yet.</p>}
       {calls?.map((c) => (
         <div key={c.id} data-call={c.id} className={`flex flex-col gap-1 p-2 rounded border ${theme.border} text-xs`}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>{formatMoment(c.startedAt, zone)}</span>
-            {c.endedAt && <span>{lengthText(c.lengthS)}</span>}
-            <span>{c.endedAt ? (END_REASONS[c.endReason] ?? c.endReason) : 'in progress'}</span>
-            <span>{plural(c.turns, 'turn')}</span>
-            {c.slowestFirstSoundS != null && <span>{`slowest ${c.slowestFirstSoundS} s`}</span>}
+            <CallFacts call={c} zone={zone} />
             {c.transcript && (
               <button type="button" onClick={() => toggle(c)} disabled={busyId === c.id} className="min-h-11 md:min-h-0 underline">
                 Transcript
@@ -733,21 +708,7 @@ function Calls({ theme, api, lineId, zone, showToast, reloadKey, onDeleted }) {
               Delete call
             </button>
           </div>
-          {open?.id === c.id && (
-            <div data-testid="phone-transcript" className="flex flex-col gap-1 pl-2">
-              {open.messages.map((m) => (
-                <p key={m.id}>
-                  <span className={`font-bold ${theme.textSecondary}`}>{m.role === 'user' ? 'Caller' : 'Line'}: </span>
-                  <span>{m.content}</span>
-                </p>
-              ))}
-              {open.stats.length > 0 && (
-                <ul data-testid="phone-turn-timings" aria-label="Timings per turn" className={`flex flex-col text-[10px] ${theme.textMuted}`}>
-                  {turnLines(open.stats).map((text, i) => <li key={i}>{text}</li>)}
-                </ul>
-              )}
-            </div>
-          )}
+          {open?.id === c.id && <CallTranscript theme={theme} messages={open.messages} stats={open.stats} />}
         </div>
       ))}
     </div>

@@ -810,15 +810,23 @@ system could dial, this area says what to set instead of showing lines that woul
 **Calls.** Under the lines, **Calls** lists the line's calls, newest first: the time,
 how long, why it ended (caller hung up, reached the time limit, no one spoke, token budget
 used up, line was busy or closed, something went wrong, app was restarted), the number of
-turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line"),
-with one line per turn under it: "Turn n: first sound X.X s · heard after Y.Y s", both counted
-in seconds from when the caller stopped speaking, plus what went wrong, if anything (a
-sentence was skipped, said nothing, the answer failed). Something the caller said that
-couldn't be made out isn't a turn: it has a line of its own, "Not heard", with no number,
-or "Not heard: first sound X.X s" when the line answered it with "Sorry, I didn't get that";
-**Delete call** removes the call and its transcript after you confirm; **Refresh** reloads
-the list. Calls turned away as busy or closed are listed too, with no transcript. No audio
-is kept, and no caller's number.
+turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line").
+Each turn's timing sits beside its own messages: the caller's line says when they stopped
+speaking (minutes and seconds since the call began), and the line's reply says "first sound
+X.X s · heard after Y.Y s", both counted in seconds from when the caller stopped speaking, plus
+what went wrong, if anything (a sentence was skipped, said nothing, the answer failed).
+Something the caller said that couldn't be made out has a line of its own, "Not heard at 0:30".
+(A call recorded before this keeps a separate list of timings under its transcript.)
+**Delete call** removes the call and its transcript after you confirm. **Refresh** reloads
+the list and an open transcript: it reads "Refreshing…" while it works, then "Updated hh:mm:ss".
+Calls turned away as busy or closed are listed too, with no transcript. No audio is kept, and
+no caller's number.
+
+**Admin → Calls** lists the calls of every line in one place, newest first, 25 at a time
+(**More** loads the next 25, up to the newest 200 calls), with the line's name on each row and the same transcripts. A call
+in progress updates itself about every 2 seconds while the tab is open and visible (new calls
+appear by themselves, within about 10 seconds), and its transcript grows as the line writes its reply (within a few seconds); its
+turn count and timings appear when the call ends.
 
 ### Projects: every project on the server
 

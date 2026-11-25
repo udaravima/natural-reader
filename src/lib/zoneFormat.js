@@ -40,3 +40,16 @@ export function formatDay(value, zone) {
     return format('UTC');
   }
 }
+
+/** A timestamp's time of day as `HH:MM:SS` (24 hour) in `zone`; a zone Intl refuses reads as UTC. */
+export function formatClock(value, zone) {
+  const date = new Date(value);
+  const format = (timeZone) => new Intl.DateTimeFormat('en-GB', {
+    timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(date);
+  try {
+    return format(zone || 'UTC');
+  } catch {
+    return format('UTC');
+  }
+}

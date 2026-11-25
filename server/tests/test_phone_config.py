@@ -6,7 +6,7 @@ from server.phone.config import PhoneConfig, is_loopback_host, load_phone_config
 
 def test_defaults_are_off():
     cfg = load_phone_config({})
-    assert cfg == PhoneConfig(listen=None, allow=(), pbx_address=None, max_calls=2, idle_s=30, checking_s=4)
+    assert cfg == PhoneConfig(listen=None, allow=(), pbx_address=None, max_calls=2, idle_s=30)
 
 
 def test_public_listen_without_allow_is_off(caplog):
@@ -57,11 +57,11 @@ def test_pbx_address_rules():
 
 
 def test_numbers_and_bad_numbers(caplog):
-    cfg = load_phone_config({"PHONE_MAX_CALLS": "5", "PHONE_IDLE_S": "12.5", "PHONE_CHECKING_S": "2"})
-    assert (cfg.max_calls, cfg.idle_s, cfg.checking_s) == (5, 12.5, 2)
+    cfg = load_phone_config({"PHONE_MAX_CALLS": "5", "PHONE_IDLE_S": "12.5"})
+    assert (cfg.max_calls, cfg.idle_s) == (5, 12.5)
     with caplog.at_level(logging.WARNING):
-        bad = load_phone_config({"PHONE_MAX_CALLS": "many", "PHONE_IDLE_S": "-1", "PHONE_CHECKING_S": "999"})
-    assert (bad.max_calls, bad.idle_s, bad.checking_s) == (2, 30, 4)
+        bad = load_phone_config({"PHONE_MAX_CALLS": "many", "PHONE_IDLE_S": "-1"})
+    assert (bad.max_calls, bad.idle_s) == (2, 30)
     assert "PHONE_MAX_CALLS" in caplog.text
 
 

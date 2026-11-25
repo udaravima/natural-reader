@@ -1925,7 +1925,6 @@ into Asterisk. What it is, the setup and troubleshooting:
 | `PHONE_PBX_ADDRESS` | the listen address | `host:port` the phone system dials, written into the console's dialplan lines. Used exactly as written. Needed when you listen on a wildcard. |
 | `PHONE_MAX_CALLS` | `2` | Calls at once across all lines (1 to 20). Each line has its own cap too. |
 | `PHONE_IDLE_S` | `30` | Seconds (1 to 600) of caller silence before "Are you still there?", and again before the hang-up. |
-| `PHONE_CHECKING_S` | `4` | Seconds (0.5 to 60) a tool may run before the one "Still checking" phrase. |
 | `PHONE_MAX_UTTERANCE_S` | `30` | Seconds (5 to 120) of unbroken caller sound heard as one clip. |
 | `PHONE_MODEL_KEEP_ALIVE` | `15m` | How long Ollama keeps a line's model loaded after the phone last asked for it (`15m`, `1h`, or seconds). While the listener is on, the app asks again every 2 minutes for the model of each line that is on, so a first answer never waits for a load; the cost is the model's memory while a line is on. Only a model on an Ollama you host is loaded (not Gemini, OpenAI-compatible APIs, `-cloud` models or ollama.com), and never against someone using it at another context size. Capped by `INFERENCE_KEEP_ALIVE_MAX`: under 4 minutes after the cap only calls load it, and a cap of 0 keeps nothing; `0` here turns it all off and restores the old behaviour ([PHONE_LINES.md](PHONE_LINES.md#the-lines-model-stays-loaded)). |
 

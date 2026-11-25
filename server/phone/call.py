@@ -28,8 +28,7 @@ so that doesn't end babble mode; only QUIET_S with no run open does. That quiet 
 normal mode (R16.3), so two coughs a minute apart never make babble mode. An echo, a misheard clip or a misfire
 leaves the count as it is.
 The phone adds: words written before a tool are spoken at once (`text-end`); a filler when a tool starts with nothing
-said yet, or when the app's own search found passages for a question (R18.3), and "still checking" once if no text
-follows for `checking_s`; `sorry` for a failed or empty answer;
+said yet, or when the app's own search found passages for a question (R18.3); `sorry` for a failed or empty answer;
 "are you still there?" and then goodbye after silence; goodbye at the call's time limit; `closed` when the budget runs
 out. An ending can't be interrupted: its clip plays out, the pacer stops, then the call hangs up.
 
@@ -163,9 +162,11 @@ class CallOutcome:
 def _stat(stopped_at: float) -> dict[str, Any]:
     """A turn's timings, in seconds since the call started (None: it never got there), and its error, if any. A
     turn's "first sound" is first_audio_at - stopped_at, the figure Talk's clipTimes calls firstSound. A clip judged
-    while the call was in babble mode also gets `babble: True`; the key is absent otherwise."""
+    while the call was in babble mode also gets `babble: True`; the key is absent otherwise. A turn also names the
+    chat messages it made (`user_message_id`, `assistant_message_id`; None until its claim lands, and for a clip that
+    was never heard), so the console shows each timing beside its messages without counting (R21.2)."""
     return {"stopped_at": stopped_at, "heard_at": None, "first_text_at": None, "first_sentence_at": None,
-            "first_audio_at": None, "error": None}
+            "first_audio_at": None, "error": None, "user_message_id": None, "assistant_message_id": None}
 
 
 def _wav(samples: np.ndarray) -> bytes:
@@ -195,8 +196,6 @@ class _Turn:
         self.ends: list[int] = []            # each voiced sentence's end in the reply
         self.pieces = 0                      # sentences cut from the reply so far
         self.filled = False                  # its filler has played
-        self.checked = False                 # its "still checking" has played
-        self.checking: asyncio.Task | None = None
         self.voice_failed = False
         self.error: str | None = None        # the model's error code, or "begin" / "internal"
 
@@ -592,10 +591,8 @@ class CallSession:
             pieces.put_nowait(None)
             await voice
         finally:
-            helpers = [task for task in (voice, turn.checking) if task is not None]
-            for task in helpers:
-                task.cancel()
-            await asyncio.gather(*helpers, return_exceptions=True)
+            voice.cancel()
+            await asyncio.gather(voice, return_exceptions=True)
 
     async def _claim(self, turn: _Turn, req: TurnRequest) -> TurnClaim | None:
         begin = asyncio.ensure_future(self._deps.begin(
@@ -610,6 +607,9 @@ class CallSession:
             claim = await self._landed(begin)
             if claim is not None:
                 self._turns += 1
+                # its messages exist (the caller's words, an empty aborted reply): the console must find them
+                turn.stat["user_message_id"] = claim.user_message_id
+                turn.stat["assistant_message_id"] = claim.assistant_message_id
                 await self._give_back(req, claim)
             raise
         except Exception as exc:
@@ -618,6 +618,8 @@ class CallSession:
             return None
         self._turns += 1
         turn.message_id = claim.assistant_message_id
+        turn.stat["user_message_id"] = claim.user_message_id
+        turn.stat["assistant_message_id"] = claim.assistant_message_id
         return claim
 
     @staticmethod
@@ -655,7 +657,6 @@ class CallSession:
                         wrote = True
                         if turn.stat["first_text_at"] is None:
                             turn.stat["first_text_at"] = self._at()
-                        self._stop_checking(turn)
                         self._cut(turn, splitter.feed(event["delta"]), pieces)
                     elif kind == "text-end":
                         # Words written before a tool are spoken now, not after the answer (Talk's trap, fixed).
@@ -696,26 +697,11 @@ class CallSession:
 
     def _tool_started(self, turn: _Turn) -> None:
         """A tool started, or the app's search found passages for a question: the filler, if nothing has been said
-        yet, and the "still checking" timer. Each clip plays at most once per turn, however many tools follow."""
+        yet. It plays at most once per turn, however many tools follow."""
         if not turn.filled and turn.pieces == 0:
             turn.filled = True
             if self._turn_clip(turn, "filler", self._fillers):
                 self._fillers += 1
-        if not turn.checked and turn.checking is None:
-            turn.checking = asyncio.create_task(self._checking(turn))
-
-    async def _checking(self, turn: _Turn) -> None:
-        await self._deps.sleep(self._deps.cfg.checking_s)
-        turn.checking = None
-        if not turn.checked:
-            turn.checked = True
-            self._turn_clip(turn, "checking")
-
-    @staticmethod
-    def _stop_checking(turn: _Turn) -> None:
-        if turn.checking is not None:
-            turn.checking.cancel()
-            turn.checking = None
 
     async def _voice(self, turn: _Turn, pieces: asyncio.Queue) -> None:
         """The reply's sentences in the line's voice, in order, into the pacer. The next one is voiced once no more

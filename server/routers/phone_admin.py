@@ -1,6 +1,6 @@
 """/v1/admin/phone/* — phone lines for the admin (spec §5.7, §5.10): the listener's state, the voices a line may
 speak with, the lines (their profile, project, model, voice, welcome and limits), the welcome as a WAV, and each
-line's calls with their transcripts.
+line's calls with their transcripts, and all lines' calls in one list.
 
 Every route needs the `admin` capability. Putting a project on a line also needs the admin to be a maintainer or
 owner of that project (R2.6), because the line publishes it to anyone who dials. Reading a line's project name or its
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin/phone", tags=["admin-phone"])
 
 SNIPPET_EXTEN = "810"     # the snippet's example extension: the console tells the admin to pick any free one
-LIVE_GRACE_S = 60         # an open call older than its line's longest call plus this was left by a crash (R11.2)
+LIVE_GRACE_S = store.LIVE_GRACE_S   # an open call older than its line's longest call plus this was left by a crash (R11.2)
 CALLS_MAX = 200           # calls listed at once
 # Kokoro reads a voice's text in the language its id's first letter names (tts_language), and a phase-1 line speaks
 # English (R11.11): only these Kokoro voices may be a line's. Phase 2's language menu widens this per line language.
@@ -558,7 +558,7 @@ def _call_view(call: dict) -> dict:
             "lengthS": round((ended - call["started_at"]).total_seconds(), 1) if ended else None,
             "endReason": call["end_reason"], "turns": call["turns"],
             "slowestFirstSoundS": _slowest_first_sound(call["stats"]),
-            "transcript": call["session_id"] is not None}
+            "transcript": call["session_id"] is not None, "inProgress": call["in_progress"]}
 
 
 @router.get("/lines/{line_id}/calls")
@@ -569,6 +569,22 @@ async def list_calls(line_id: UUID, limit: int = Query(50, ge=1, le=CALLS_MAX),
         await _line_or_404(conn, str(line_id))
         rows = await store.list_calls(conn, str(line_id), limit)
     return [_call_view(c) for c in rows]
+
+
+@router.get("/calls")
+async def list_all_calls(limit: int = Query(25, ge=1, le=CALLS_MAX), before: str | None = None,
+                         _: deps.Principal = Depends(deps.require_admin), open_conn=Depends(phone_conn)):
+    """Every line's calls, newest first, a page at a time (R21.4). Each row is the line's row plus the line's id and
+    name. `next` is the cursor for the page after this one, or null on the last: pass it back as `before`."""
+    cursor = None
+    if before is not None:
+        cursor = store.decode_cursor(before)
+        if cursor is None:
+            raise _refuse(422, "bad_cursor", "That page marker isn't one this list gave.")
+    async with open_conn() as conn:
+        rows, nxt = await store.list_all_calls(conn, limit, cursor)
+    return {"calls": [{**_call_view(c), "lineId": c["line_id"], "lineName": c["line_name"]} for c in rows],
+            "next": nxt}
 
 
 @router.get("/calls/{call_id}")

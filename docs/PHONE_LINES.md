@@ -56,7 +56,8 @@ console shows it as the call's transcript.
   the app changes the phone system.
 - **Everything about a line is made in the console**: create, edit, switch on and off,
   hear the welcome, read and delete a call and its transcript, delete the line. No
-  command line is needed once the listener is on.
+  command line is needed once the listener is on. Admin → **Calls** lists every line's
+  calls in one place, and shows a call in progress as it happens ([below](#reading-calls)).
 - **Not yet walked on a real phone line.** The call loop, the AudioSocket adapter and
   the console are tested, and a recorded question has been put through the whole
   path with the [fake phone system](#trying-it-without-a-phone-system). A call from a
@@ -86,8 +87,34 @@ console shows it as the call's transcript.
    put them in your Asterisk configuration (below).
 6. **Tick *Line is on*** and save. A new line starts off, and a line with no project
    can't be switched on.
-7. **Ring it.** The call appears under **Calls** in the line's editor, with its
-   transcript.
+7. **Ring it.** The call appears under **Calls** in the line's editor, and in Admin →
+   **Calls**, with its transcript ([Reading calls](#reading-calls)).
+
+## Reading calls
+
+Two places show calls, and both read the same way.
+
+- **Admin → Calls** lists the calls of **every line**, newest first, 25 at a time (**More**
+  loads the next 25, up to the newest 200 calls, where it stops and the section says "Showing the newest 200 calls."). A row shows the line's name, when the call began, how long it was, why
+  it ended, its turns and its slowest first sound. **Transcript** opens it.
+- **A line's editor → Calls** lists that one line's calls, with **Delete call**.
+
+A transcript shows what was said, with each turn's timing beside its own messages: the
+caller's line says when the caller stopped speaking (minutes and seconds since the call
+began), and the line's reply says "first sound X.X s · heard after Y.Y s" (both counted in
+seconds from when the caller stopped speaking), plus what went wrong, if anything. Something
+the caller said that couldn't be made out has a line of its own, "Not heard at 0:30". The
+timings are matched to messages by the message's id, so a misheard clip or a failed answer
+never shifts them. A call recorded before this existed has no ids and keeps the old list of
+timings under the transcript.
+
+**Calls update themselves.** In Admin → Calls the list and an open transcript read again about
+every 2 seconds while a call on the screen is in progress, and about every 10 seconds otherwise,
+so a new call appears without a click; only while the browser tab is visible, and never after
+you leave the section. A call in progress shows no turn count or slowest first sound until it ends. The
+reply's words appear within a few seconds, as the line writes them (usually just before they are spoken; an empty reply reads "…" while the call goes on, and "(cut off before answering)" once it has ended), but **timings appear when the call ends**: the app writes them
+when the call hangs up, not during it. **Refresh** reads the list (and an open transcript)
+now: it reads "Refreshing…" while it works, then "Updated hh:mm:ss" in the console's time zone.
 
 ## The Asterisk side
 
@@ -138,7 +165,6 @@ the listener off (the log says why).
 | `PHONE_PBX_ADDRESS` | the listen address (unset when that is a wildcard) | `host:port` | What the console writes into the dialplan lines: where the phone system dials. Used exactly as written. It may differ from the listen address, for example behind a published container port. |
 | `PHONE_MAX_CALLS` | `2` | 1 to 20 | Calls at once across all lines. Each line has its own cap too; a call over either hears "busy". |
 | `PHONE_IDLE_S` | `30` | 1 to 600, **seconds** | Seconds of a silent caller before the assistant asks "Are you still there?". After a second period of silence it says goodbye and hangs up. |
-| `PHONE_CHECKING_S` | `4` | 0.5 to 60, **seconds** | How long a tool (a document search, say) may run before the caller hears one "Still checking" phrase. |
 | `PHONE_MAX_UTTERANCE_S` | `30` | 5 to 120, **seconds** | The longest stretch of unbroken caller sound heard as one clip; longer sound is cut into clips this long. With constant background sound at talking level, such as a television next to the phone, each of the first two stretches pauses the reply for up to this long; once both are judged noise the call is in **babble mode** and the reply plays on through the sound ([how, and what it costs](#troubleshooting)). Lowering it to 10–15 shortens that silent start. |
 | `PHONE_MODEL_KEEP_ALIVE` | `15m` | a duration (`15m`, `1h`, or **seconds**: `900`); `0` turns it off | How long Ollama keeps a line's model loaded after the phone last asked for it. While the listener is on the app asks again every 2 minutes, so the model of a line that is on stays loaded, and this is how long it lingers once the line is off or the backend stops. Capped by `INFERENCE_KEEP_ALIVE_MAX` (30 minutes by default). Under 4 minutes, after the cap, the refresher stays off ([The line's model stays loaded](#the-lines-model-stays-loaded)). `0` also turns off the read of a line's prompt as a call connects ([A call's first answer](#a-calls-first-answer)). A value that isn't a duration is logged and replaced by the default. |
 
@@ -290,8 +316,7 @@ found answer starts roughly 6 to 8 seconds after (an estimate from those two
 measurements). The search itself takes about 20 ms. A greeting can clear the score floor
 too ("Good morning" did, just, on a one-page document), so it may wait the same 3
 seconds longer. When the caller's words are a question (the recognizer wrote a "?"), the
-caller hears the filler phrase about 1.5 seconds after they stop, while the model reads,
-and "Still checking" after `PHONE_CHECKING_S`, as for a tool. Other words get no filler,
+caller hears the filler phrase about 1.5 seconds after they stop, while the model reads. Other words get no filler,
 so "Good morning" never hears "Let me check". The filler depends on that "?": a
 recognizer that writes no punctuation, such as a Google recognizer whose punctuation is
 turned off in Google's console, never plays it, and its callers wait through those
@@ -331,8 +356,7 @@ recognition), the model's first words came 9 to 11 seconds after the question wa
 against 17 to 19 seconds without the read. The read itself took about 15 seconds, so it
 wasn't finished when the question came, and the answer waited for the rest of it; a
 longer welcome hides more. While the answer waits, a caller whose words are a question
-hears "Let me check" and, after `PHONE_CHECKING_S`, "Still checking", then silence until
-the answer. The read is not a turn: nothing is billed, stored or shown,
+hears "Let me check", then silence until the answer. The read is not a turn: nothing is billed, stored or shown,
 and the one word it generates is thrown away. If the call ends first, the read is given
 up. It loads the model too, with the same settings as the call's turns.
 

@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file.
   with how long it lasted and how long the first sound took. The listener is off
   until `PHONE_AUDIOSOCKET_LISTEN` is set, only the peers in
   `PHONE_AUDIOSOCKET_ALLOW` may connect, and the knobs are `PHONE_PBX_ADDRESS`,
-  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`, `PHONE_CHECKING_S`,
+  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`,
   `PHONE_MAX_UTTERANCE_S` and `PHONE_MODEL_KEEP_ALIVE`. Each line has a longest
   call, a calls-at-once cap and
   a daily token budget; a project is attached only by a maintainer or owner, and
@@ -41,6 +41,27 @@ All notable changes to this project will be documented in this file.
   `GOOGLE_TTS_LANGUAGE`, else American), and each person can pick their own
   under Settings → Chat → Reply accent. Sinhala and Tamil sentences are read
   as before.
+- **Admin → Calls shows every phone line's calls, and a call in progress as it
+  happens.** A new Calls section lists the calls of all lines, newest first, 25
+  at a time (More loads the next 25, up to the newest 200), with the line's name, start, length, end
+  reason, turns and slowest first sound; Transcript opens one. The list and an
+  open transcript read again about every 2 seconds while a call on screen is in
+  progress and about every 10 seconds otherwise, only while the tab is visible.
+  A call in progress shows no turn count or timings until it ends.
+  A call's transcript now shows each turn's timing beside its own messages (the
+  caller's line with when they stopped speaking, the reply with its first sound
+  and when it was heard, a misheard clip as "Not heard at m:ss"), matched by
+  message id; calls recorded before this keep the old list of timings.
+  Refresh reads "Refreshing…" while it works and then "Updated hh:mm:ss"; the
+  line editor's list gets the same. New API: `GET /v1/admin/phone/calls`
+  (admin only, paged by a cursor).
+
+### Changed
+
+- **A phone call no longer says "Still checking. Thanks for waiting."** The
+  "Let me check." / "One moment." filler stays. `PHONE_CHECKING_S` is gone: a
+  value left in `.env` is ignored. A line's stored "Still checking" recording is
+  ignored too; nothing needs to be re-saved.
 
 ### Fixed
 

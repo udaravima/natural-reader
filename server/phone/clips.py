@@ -20,7 +20,6 @@ DEFAULT_CLIP_TEXTS: dict[str, list[str]] = {
     "still": ["Are you still there?"],
     "sorry": ["Sorry, I didn't get that. Could you say it again?"],
     "filler": ["Let me check.", "One moment."],
-    "checking": ["Still checking. Thanks for waiting."],
 }
 
 

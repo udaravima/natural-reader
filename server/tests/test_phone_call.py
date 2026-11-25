@@ -315,14 +315,14 @@ class Call:
 
 
 def call(script, *, turns=(), heard=(), voice=None, hearing=ScriptedHearing, max_call_s=600, idle_s=30.0,
-         checking_s=4.0, max_utterance_s=30.0, begin_s=0.0, finalize_s=0.05, hear_s=0.3) -> Call:
+         max_utterance_s=30.0, begin_s=0.0, finalize_s=0.05, hear_s=0.3) -> Call:
     async def main() -> Call:
         loop = asyncio.get_running_loop()
         media = FakeLine(script)
         chat = FakeChat(turns, begin_s=begin_s, finalize_s=finalize_s)
         ears = FakeEars(heard, seconds=hear_s)
         tts = voice or FakeVoice()
-        cfg = PhoneConfig(listen=None, allow=(), pbx_address=None, idle_s=idle_s, checking_s=checking_s,
+        cfg = PhoneConfig(listen=None, allow=(), pbx_address=None, idle_s=idle_s,
                           max_utterance_s=max_utterance_s)
         extra = {} if hearing is None else {"hearing": hearing}
         deps = CallDeps(transcribe=ears, begin=chat.begin, run=chat.run, render=tts, clock=loop.time,
@@ -430,12 +430,13 @@ def test_filler_when_a_tool_starts_silently():
     assert c.outcome.stats[0]["first_audio_at"] == pytest.approx(c.starts("filler0"))
 
 
-def test_checking_plays_once_when_a_tool_runs_long():
+def test_a_tool_that_runs_long_gets_the_filler_and_no_second_phrase():
+    # R21.1: "Still checking" is gone. A line whose stored clips still hold a `checking` one (CLIPS has it, as the
+    # owner's live lines do) never plays it, however long the tool runs.
     c = call([*speech(1.0, 2.0), (16.0, HungUp("caller"))], heard=[words("Is the book in?")],
              turns=[[TOOL, 5.0, TOOL_DONE, TOOL, 5.0, TOOL_DONE, *says("Found it."), FINISH]])
-    assert c.played() == ["greeting", "filler0", "checking", "Found it."]
-    assert c.starts("checking") == pytest.approx(2.3 + 4.0, abs=0.021)
-    assert len(c.frames_of("checking")) == 20                  # once: one 0.4 s clip, not two
+    assert c.played() == ["greeting", "filler0", "Found it."]
+    assert c.frames_of("checking") == []
 
 
 # What run_turn sends before its first step on a line's turn: the scope note always (a line's chat is a project
@@ -447,15 +448,13 @@ CONTEXT_HIT = {"type": "data-context", "items": [
 CONTEXT_MISS = {"type": "data-context", "items": [SCOPE]}
 
 
-def test_a_question_the_apps_search_found_gets_the_filler_and_the_checking_clip_once():
+def test_a_question_the_apps_search_found_gets_the_filler_once():
     # R18.3: a prefetch hit costs about 3 s more before the first word (the exchange's prompt time on a CPU), with no
     # tool call to start the filler. A question ("?", the recognizer's punctuation) is treated as a tool start.
     c = call([*speech(1.0, 2.0), (12.0, HungUp("caller"))], heard=[words("On weekdays, what are the open hours?")],
              turns=[[CONTEXT_HIT, 5.0, *says("We open at half past eight."), FINISH]])
-    assert c.played() == ["greeting", "filler0", "checking", "We open at half past eight."]
+    assert c.played() == ["greeting", "filler0", "We open at half past eight."]
     assert c.starts("filler0") == pytest.approx(2.31, abs=0.011)
-    assert c.starts("checking") == pytest.approx(2.3 + 4.0, abs=0.021)
-    assert len(c.frames_of("checking")) == 20                  # once
     assert c.outcome.stats[0]["first_audio_at"] == pytest.approx(c.starts("filler0"))
 
 
@@ -473,18 +472,6 @@ def test_a_found_question_then_a_real_tool_call_plays_one_filler_per_turn():
                     [CONTEXT_HIT, 1.0, *says("A dollar twenty-five a day."), FINISH]])
     # one filler for the first turn, though its model searched again; the second turn has the other filler
     assert c.played() == ["greeting", "filler0", "Only by phone.", "filler1", "A dollar twenty-five a day."]
-
-
-def test_a_caller_who_cuts_in_before_a_found_questions_checking_clip_never_hears_it():
-    # The timer starts at data-context, before the model's silent read of the passages (about 3 s warm, about 21 s
-    # cold): the moment a caller is most likely to say "hello?". Their cut closes the turn, and the timer with it, so
-    # "checking" (due at about 6.3 s) never plays into the next turn.
-    c = call([*speech(1.0, 2.0), *speech(4.0, 4.6), (16.0, HungUp("caller"))],
-             heard=[words("Is the front desk open on Sunday?"), words("Hello, are you there")],
-             turns=[[CONTEXT_HIT, 10.0, *says("It is closed on Sunday."), FINISH],
-                    [*says("Yes, I'm here."), FINISH]])
-    assert c.played() == ["greeting", "filler0", "Yes, I'm here."]
-    assert c.chat.begins[1]["text"] == "Hello, are you there" and len(c.chat.begins) == 2
 
 
 def test_a_question_the_apps_search_missed_waits_for_a_tool_as_before():
@@ -755,6 +742,64 @@ def test_a_turn_that_breaks_says_sorry_and_the_call_goes_on():
     assert c.played() == ["greeting", "sorry", "We open at nine."]
     assert c.outcome.stats[0]["error"] == "internal"
     assert c.chat.turns[0]["finalized_at"] == pytest.approx(2.35)   # closed at once, not after its 10 s
+
+
+# R21.2: each turn's stats entry names the messages it produced, so the console can show timings beside them without
+# counting turns against messages (a misheard clip, a failed claim or an interruption would throw the count off).
+
+def test_each_turn_records_the_ids_of_the_messages_it_made():
+    c = call([*speech(1.0, 2.0), *speech(5.0, 6.0), (9.0, HungUp("caller"))],
+             heard=[words("What are your hours?"), words("And on Sunday?")],
+             turns=[[*says("We open at nine."), FINISH], [*says("We are closed on Sunday."), FINISH]])
+    ids = [(s["user_message_id"], s["assistant_message_id"]) for s in c.outcome.stats]
+    assert ids == [("u1", "a1"), ("u2", "a2")]
+
+
+def test_an_interrupted_turn_keeps_its_ids_and_the_next_turn_gets_its_own():
+    c = call([*speech(1.0, 2.0), *speech(3.8, 4.6), (9.0, HungUp("caller"))],
+             heard=[words("When do you open?"), words("What about Sunday?")],
+             turns=[[*says("One is first. ", "Two is second. ", "Three is third."), 10.0, FINISH],
+                    [*says("Sunday is closed."), FINISH]])
+    ids = [(s["user_message_id"], s["assistant_message_id"]) for s in c.outcome.stats]
+    assert ids == [("u1", "a1"), ("u2", "a2")]
+
+
+def test_a_misheard_clip_and_a_turn_after_it_do_not_shift_the_ids():
+    c = call([*speech(1.0, 2.0), *speech(4.0, 5.0), (9.0, HungUp("caller"))],
+             heard=[RuntimeError("the recognizer is down"), words("When do you open?")],
+             turns=[[*says("We open at nine."), FINISH]])
+    misheard, answered = c.outcome.stats
+    assert misheard["error"] == "hearing" and misheard.get("user_message_id") is None
+    assert misheard.get("assistant_message_id") is None
+    assert (answered["user_message_id"], answered["assistant_message_id"]) == ("u1", "a1")
+
+
+def test_a_turn_cut_while_its_claim_is_made_still_records_its_ids():
+    # The claim lands while the turn is being cut and is given back: its messages exist in the chat, so the stats
+    # entry must name them (else the console files it as a failed answer).
+    c = call([*speech(1.0, 2.0), *speech(3.0, 3.5), (14.0, HungUp("caller"))],
+             heard=[words("When do you open?"), words("I mean on Sunday?")], begin_s=2.0,
+             turns=[[*says("We open at nine."), FINISH], [*says("Sunday is closed."), FINISH]])
+    first, second = c.outcome.stats
+    assert c.chat.turns[0]["message"] == "a1" and c.chat.turns[0]["finalized_at"] is not None
+    assert (first["user_message_id"], first["assistant_message_id"]) == ("u1", "a1")
+    assert (second["user_message_id"], second["assistant_message_id"]) == ("u2", "a2")
+
+
+def test_a_turn_whose_claim_failed_has_no_ids(monkeypatch):
+    async def refuse(self, **kw):
+        self.begins.append(kw)
+        if len(self.begins) == 1:
+            raise RuntimeError("the database is down")
+        return TurnClaim(kw["session_id"], "u2", "a2", False)
+
+    monkeypatch.setattr(FakeChat, "begin", refuse)
+    c = call([*speech(1.0, 2.0), *speech(5.0, 6.0), (9.0, HungUp("caller"))],
+             heard=[words("When do you open?"), words("When do you open?")],
+             turns=[[*says("We open at nine."), FINISH]])
+    failed, answered = c.outcome.stats
+    assert failed["error"] == "begin" and failed["user_message_id"] is None and failed["assistant_message_id"] is None
+    assert (answered["user_message_id"], answered["assistant_message_id"]) == ("u2", "a2")
 
 
 def test_transcription_failure_says_sorry():

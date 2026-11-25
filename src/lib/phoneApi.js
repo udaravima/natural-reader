@@ -64,6 +64,8 @@ export function phoneApi(host, port) {
     restoreAccess: (id) => call(`${line(id)}/access`, { method: 'POST' }),
     deleteLine: (id) => call(line(id), { method: 'DELETE' }),
     calls: (id) => call(`${line(id)}/calls`),
+    /** Every line's calls, newest first: `{ calls, next }`. `before` is the previous page's `next`. */
+    allCalls: ({ limit = 25, before } = {}) => call(`/calls?limit=${limit}${before ? `&before=${enc(before)}` : ''}`),
     call: (id) => call(`/calls/${enc(id)}`),
     deleteCall: (id) => call(`/calls/${enc(id)}`, { method: 'DELETE' }),
     /** The saved welcome as a WAV Blob, for "Hear the welcome". */
