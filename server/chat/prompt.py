@@ -106,6 +106,8 @@ def first_line(has_profile: bool, identity: app_identity.Identity, name: str = "
 # After a profile with a character of its own, on a turn that can read documents (character profiles spec): the
 # character sets the voice, never what a document answer says.
 STEPS_WIN = "Whatever your role, an answer from the documents follows the steps below and cites its pages."
+# A phone caller only hears the answer, so its steps don't cite pages (PHONE_RULE).
+STEPS_WIN_PHONE = "Whatever your role, an answer from the documents follows the steps below."
 
 
 def document_tools_offered(offered: Iterable[str]) -> bool:
@@ -240,10 +242,15 @@ def _web_answer_sentences(offered: set[str]) -> str:
     return out
 
 
-def _answer_step(offered: set[str], project: bool) -> str:
+def _answer_step(offered: set[str], project: bool, phone: bool = False) -> str:
     """Step 4. The gap rule: what the documents lack may be filled from general knowledge, introduced as such and
-    never with a page. A project cites the document too, by its name in the map."""
-    if project:
+    never with a page. A project cites the document too, by its name in the map. A phone call cites nothing: the
+    caller would hear every bracket, page and file name, so the step shows no citation to copy."""
+    if phone:
+        step = ("4. Answer in plain spoken sentences, without page numbers or document names in brackets. When the "
+                "documents don't cover part of the question, say so plainly; you may add what you know in general, "
+                "introduced as not from the documents.")
+    elif project:
         step = ("4. Answer: after each fact from a document, name the document and page like this: "
                 "(Guide.md, page 7), with the name exactly as listed. When the documents don't cover part of the "
                 "question, say so plainly; you may add what you know in general, introduced as not from the "
@@ -256,9 +263,9 @@ def _answer_step(offered: set[str], project: bool) -> str:
 
 
 def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = False,
-               project: ProjectScope | None = None) -> str:
+               project: ProjectScope | None = None, phone: bool = False) -> str:
     """The strategy, steps 1 to 4. Step 1 always; steps 2 to 4 when the
-    document can reach the model (its tools, or prefetched passages)."""
+    document can reach the model (its tools, or prefetched passages). `phone`: step 4 is the phone's."""
     doc_tools = document_tools_offered(offered)
     prefetched_only = not doc_tools and doc is not None and doc.state == "indexed"
     lines = ["How to handle each message:",
@@ -287,7 +294,7 @@ def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = Fals
         lines += [_find_step(offered, project is not None, prefetch),
                   "3. Check before you answer: search returns the closest passages even when none of them "
                   "answers. Use only text that says what you report.",
-                  _answer_step(offered, project is not None)]
+                  _answer_step(offered, project is not None, phone)]
     elif prefetched_only:
         lines += [f"2. The app searched the document for this message: the passages it found, if any, are in a "
                   f"<{PASSAGES_TAG}> block in the user's message. They are the closest matches, not necessarily "
@@ -325,10 +332,18 @@ SPOKEN_RULE = (
     "headings, links or symbols.")
 
 
+PHONE_RULE = (
+    "This is a phone call: the caller only hears you. Don't cite sources the way the steps above show: say no page "
+    "numbers, document numbers, file names or file extensions (such as .md or .pdf), links, ids or symbols, and put "
+    "nothing in brackets. If it helps to say where an answer comes from, describe the document in a few plain "
+    "words, such as \"the opening hours notice\". Look things up yourself; never ask the caller whether you should. "
+    "If the documents don't have the answer, say so. If you didn't catch something, ask the caller to repeat it.")
+
+
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
                  project: ProjectScope | None = None, spoken: bool = False,
-                 placed: frozenset[str] = frozenset(), persona: bool = True, assistant_name: str = "") -> str:
+                 phone: bool = False, placed: frozenset[str] = frozenset(), persona: bool = True, assistant_name: str = "") -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -353,17 +368,22 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     reads_docs = any(getattr(t, "reads_documents", False) for t in tools)
     documents = (doc is not None and doc.state == "indexed") or has_pins or reads_docs or has_map
     if documents and profile and persona:
-        parts.append(STEPS_WIN)
-    procedure = _procedure(doc, offered, prefetch, project)
+        parts.append(STEPS_WIN_PHONE if phone else STEPS_WIN)
+    procedure = _procedure(doc, offered, prefetch, project, phone)
     parts.append(procedure)
     if documents:
         # The pin sentence is also the only citation format a document-reading tool gets without an open
         # document; a map alone (names, headings) brings the data rule but has no pins to cite.
         # "page 7)" is in both citation formats: "(page 7)" and a project's "(Guide.md, page 7)".
-        parts.append(_data_rule(cites_pages="page 7)" in procedure, cites_pins=has_pins or reads_docs))
+        # A phone step 4 has no "page 7)", so a reading tool alone must not bring the pin sentence back; a call's
+        # chat is new and its line user can't pin, so has_pins is false on every real call.
+        parts.append(_data_rule(cites_pages="page 7)" in procedure,
+                                cites_pins=has_pins if phone else has_pins or reads_docs))
     parts.append(_ATTACHED_FILE_RULE)
     if tools:
         parts.append(_TOOL_RESULTS_ARE_DATA)
     if spoken:
         parts.append(SPOKEN_RULE)
+    if phone:
+        parts.append(PHONE_RULE)
     return "\n\n".join(parts)

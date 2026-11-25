@@ -1909,6 +1909,31 @@ role, or an API that's off, named with its project.
   sample in English, Sinhala and Tamil, fetched from Google once per voice per session
   (a few hundred characters of quota). Turning Google on or off stays the admin's.
 
+## Phone lines
+
+**Optional, and off until you set `PHONE_AUDIOSOCKET_LISTEN`.** A phone line lets people
+ring an extension on your Asterisk and talk to an assistant that answers from one
+project's documents. The app listens on a TCP port for Asterisk's AudioSocket; the
+console (**Admin → Phone lines**) makes the lines and shows the dialplan lines to paste
+into Asterisk. What it is, the setup and troubleshooting:
+[PHONE_LINES.md](PHONE_LINES.md). English only in phase 1.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PHONE_AUDIOSOCKET_LISTEN` | empty (off) | `host:port` to listen on. On bare metal and with this project's compose file (the backend uses the host's network) use the LAN address that faces the phone system, e.g. `192.0.2.10:9092`: `0.0.0.0` would listen on every interface. `0.0.0.0:9092` is only for a bridged container whose port is published on the LAN address (`-p 192.0.2.10:9092:9092`). Never `[::]:9092` (IPv6 only). Any non-loopback address also needs `PHONE_AUDIOSOCKET_ALLOW`, or the listener stays off. |
+| `PHONE_AUDIOSOCKET_ALLOW` | empty | Comma-separated IP addresses that may connect, e.g. `192.0.2.20`. The socket has no password: this list, checked before a byte is read, is the gate. Check the address the backend logs for a test call is the phone system's, not a gateway's. |
+| `PHONE_PBX_ADDRESS` | the listen address | `host:port` the phone system dials, written into the console's dialplan lines. Used exactly as written. Needed when you listen on a wildcard. |
+| `PHONE_MAX_CALLS` | `2` | Calls at once across all lines (1 to 20). Each line has its own cap too. |
+| `PHONE_IDLE_S` | `30` | Seconds (1 to 600) of caller silence before "Are you still there?", and again before the hang-up. |
+| `PHONE_MAX_UTTERANCE_S` | `30` | Seconds (5 to 120) of unbroken caller sound heard as one clip. |
+| `PHONE_MODEL_KEEP_ALIVE` | `15m` | How long Ollama keeps a line's model loaded after the phone last asked for it (`15m`, `1h`, or seconds). While the listener is on, the app asks again every 2 minutes for the model of each line that is on, so a first answer never waits for a load; the cost is the model's memory while a line is on. Only a model on an Ollama you host is loaded (not Gemini, OpenAI-compatible APIs, `-cloud` models or ollama.com), and never against someone using it at another context size. Capped by `INFERENCE_KEEP_ALIVE_MAX`: under 4 minutes after the cap only calls load it, and a cap of 0 keeps nothing; `0` here turns it all off and restores the old behaviour ([PHONE_LINES.md](PHONE_LINES.md#the-lines-model-stays-loaded)). |
+
+Hearing uses the speech window's settings ([above](#the-speech-window)) and the
+deployment's speech engine; the call caps count per worker, so with `WORKERS` above 1
+the ceiling is the cap times the workers. Keep the port on the LAN interface that
+faces the phone system, never on all interfaces, and add a host firewall rule that allows only the phone system. Like every `.env` value, a change
+needs `./startup.sh rebuild` with the container.
+
 ## Notifications
 
 The header's bell (v2.12) needs nothing set up: migration 026 runs at start, and the

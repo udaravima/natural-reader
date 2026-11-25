@@ -4,7 +4,71 @@
 
 ---
 
-## 2026-11-17 — v2.14.0: The Librarian, characters with a backstory, choosing who answers (START HERE)
+## 2026-11-25 — Phone lines: built, deployed, fixed after the first real calls (START HERE)
+
+**State.** A caller can now ring a profile: the PBX hands the call to the app over AudioSocket, and the app listens, searches the line's project and answers in the line's voice. The backend running on the owner's server is `20e8ff7` (its image was built at 19:36 on 25 November, three minutes after the fast-forward). None of it is in `development` yet. It sits on three stacked branches:
+
+| Branch | Tip | What it adds |
+| --- | --- | --- |
+| `feat/phone-lines` | `4a5ea30` (origin still at `57b2dd2`) | Phase 1, the plan's 14 tasks: migration 033 (lines, clips, calls), the call loop on the server, the AudioSocket listener, Admin → Phone lines, a fake PBX with an end-to-end test, babble mode for a TV beside the phone |
+| `fix/speech-file-names` | `30223f5` | Speech says "dot" in file names and "underscore" inside words |
+| `fix/phone-warm-model` | `20e8ff7` (pushed) | The fixes after the first real call (below) |
+
+`fix/phone-warm-model` contains the other two, so merging it brings in all of phone lines. `fix/phone-calls-console` points at the same commit and can be deleted.
+
+**What the first real calls broke, and the fixes.** The owner's first call waited 29.5 s for its first answer and never used the documents in 10 turns.
+
+- **The 29.5 s was mostly reading, not loading.** About 6 s went on loading the model and about 22 s on the model's first read of a ~2,000-token prompt, half of it tool definitions. The next turn, with the prompt in Ollama's cache, took 1.9 s. So `b317b2b` keeps a line's model loaded, and `741748d` offers only `search_documents` and `current_time` on a call and reads the line's prompt while the welcome plays. A cold first answer went from 25–32 s to 9–11 s (measured on a CPU-only machine with `gemma4:e4b`).
+- **No document facts:** `gemma4:e4b` with thinking off stops calling search after small talk, because a turn's history keeps the reply text but not the tool calls. `3967589` searches the documents before every answer on a call. This works around the cause; it doesn't fix it (Task 20 below).
+- **The console** (`20e8ff7`): "Still checking. Thanks for waiting." is gone, and a `PHONE_CHECKING_S` left in `.env` is ignored. The transcript shows each turn's timings beside its words. Refresh shows "Refreshing…", then "Updated hh:mm:ss". **Admin → Calls** lists every line's calls and updates by itself: every 10 s, every 2 s while a call is in progress, paused while the tab is hidden. New admin-only endpoint: `GET /v1/admin/phone/calls`.
+
+Gates on `20e8ff7`: backend 4139 passed / 17 skipped (scratch DB), the touched UI tests, eslint clean. The Calls section was walked in a browser with the fake PBX. It hasn't been watched during a real call yet.
+
+**Decided.**
+
+- **Task 20, the root cause:** keep a short record of a turn's tool calls in the history, so a small model keeps searching after small talk. First check whether web chat fails the same way. Then measure whether calls still need the search before every answer (about 3 s per found answer), and drop or narrow it if they don't.
+- **Next feature:** members-only lines, then a plan for a personal assistant.
+- **The members-only design so far.** These are the owner's ideas; nothing is written up yet.
+  - An admin creates a line without a project (extension, voice, limits) and assigns line managers.
+  - A project's owner or maintainer puts their project on a line, with a profile they may use.
+  - **The project side** chooses "anyone" or "verified users only" when it does that.
+  - A verified caller keys in a user id and a PIN.
+- **Proposed by me, awaiting the owner's yes:**
+  - an app-assigned short phone id, and a PIN set in Settings (hashed; three wrong tries end the call; then a lockout);
+  - one project per line;
+  - a verified call stored under the line and labelled with the caller (not in the caller's history or budget);
+  - the keypad steps run in the app at the start of the call. A PIN in the dialplan was rejected because it says nothing about who is calling, and caller numbers because AudioSocket doesn't carry them.
+- **The console's dialplan snippet shows the same example extension for every line.** That is expected: the snippet is a hint, and the PBX decides which extension reaches which line. Members-only lines will give each line its own extension, so the snippet is right as pasted.
+
+**Unknown: do key presses reach the app?** The live log shows no key events in any real call, but no key has been pressed yet. Press one on the next call. If nothing arrives as an AudioSocket digit message, members-only lines need a tone detector on the audio, since a handset's keys may reach the PBX only as tones.
+
+**Still owed.**
+
+- Merge `fix/phone-warm-model` into `development`. `.gitignore` will conflict with `13647bd`: keep both sides. This needs the owner's word.
+- docs/TESTING.md Step 7 and the CHANGELOG's "Not yet tried on a real phone line": the owner's real calls now count as that check.
+- Two deferred races from Task 17. They need two lines on models that don't fit in memory together, or `OLLAMA_NUM_PARALLEL` above 1. The details are in the ledger, 24 November 02:43.
+- Not covered by the speech-text fix: a document read aloud in the reader, and the Chrome extension.
+- Cleanup when the phone work ends:
+  - the test container `nr-phone-testpg` (scratch DB on :5435);
+  - the podman volumes `phone-lines_pgdata` and `phone-lines_cache`;
+  - the owner's `tmp/205.txt`, which holds a PBX credential the walk used.
+- Known limits: Admin → Calls shows the newest 200 calls, and a line's editor the newest 50. Timings appear when a call ends.
+
+**Where the detail is.**
+
+- Spec: `docs/superpowers/specs/2026-11-20-phone-lines-design.md`.
+- Plan: `docs/superpowers/plans/2026-11-20-phone-lines-phase1.md`.
+- Deployer guide: `docs/PHONE_LINES.md`.
+- Every task's report and ruling: `.superpowers/sdd/2026-11-20-phone-lines-phase1/` (`progress.md` and `constraints.md`; git-ignored, on the owner's machine only).
+
+**Other branches since 17 November.**
+
+- In `development`: Google's Chirp 3 HD voice with an accent setting (`b8ecd70`), and the podman test fix (`7a93a67`, pushed).
+- Pushed but not merged: the call benchmark (`feat/call-simulation` → `fix/keep-connections` → `feat/voice-matrix` at `db64041`; see `docs/CALL_BENCH.md` on that branch).
+
+---
+
+## 2026-11-17 — v2.14.0: The Librarian, characters with a backstory, choosing who answers
 
 **State.** Release v2.14.0 prepared on `development` (CHANGELOG `[2.14.0]`, `package.json`, `docs/Release_notes/RELEASE_NOTES_v2.14.0.md`). In it since v2.13.0: the fixes after 2.13.0 (the `AQ.` key, a project's page on a phone, `./startup.sh rebuild` after `.env`), `docs/MAINTENANCE.md`, The Librarian (031) and the **Talking to** chip with cards in a new chat, characters with a backstory (032) and Generate for a whole character, the document-steps line after a profile's own text, the evaluation as a character (`--character`, first-word timing), and Talk's per-stage timings. The live server ran an untagged build of `feat/voice-timings` before this. Walked on the merged tree (scratch backend, `gemma4:e4b`): fresh install, Generate, cards and chip, the side panel as a character with the prompt order checked on the wire, 360 px, and Talk.
 

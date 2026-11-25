@@ -12,7 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .appconfig import cors_allow_credentials, parse_cors_origins
 from .auth.config import load_auth_config, startup_guard, warn_published_secrets
-from .db import close_db, get_pool, init_db, init_db_until_ready
+from .db import close_db, get_pool, init_db, init_db_until_ready, is_ready as db_is_ready
 from .http_errors import install_handlers
 from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
@@ -21,6 +21,7 @@ from .endpoints import router as tts_router
 from . import google_cloud
 from .speech import openai_engine as openai_speech
 from .llm.router import start_router as start_llm_router, stop_router as stop_llm_router
+from .phone import service as phone_service
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
@@ -35,6 +36,7 @@ from .routers.project_documents import router as project_documents_router
 from .routers.project_uploads import router as project_uploads_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
+from .routers.phone_admin import router as phone_admin_router
 from .routers.settings import router as settings_router
 from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
@@ -99,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(tools_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(phone_admin_router)
     app.include_router(projects_router)
     app.include_router(project_documents_router)
     app.include_router(project_uploads_router)
@@ -121,6 +124,7 @@ def create_app() -> FastAPI:
         )
         warn_published_secrets(_auth_cfg)
         docling_convert.check_available()
+        router_up = False   # set once start_llm_router() has run; _db_ready reads it when it runs
         async def _db_ready() -> None:
             """The start-up steps that need the database. They run at start, or later, when a database that
             wasn't reachable at start comes up."""
@@ -158,6 +162,12 @@ def create_app() -> FastAPI:
                     speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
             except Exception:
                 logger.warning("Voice input warm-up skipped", exc_info=True)
+            # The phone lines' AudioSocket listener (off unless PHONE_AUDIOSOCKET_LISTEN is set). Every call needs the
+            # database, and its gate asks the model router at connect (R10.10), so it listens only once both are up:
+            # here on the late-database path (the router started long ago), after start_llm_router() below on a
+            # normal boot. start() is idempotent, so the two can't open two listeners. Never raises.
+            if router_up:
+                await phone_service.start()
 
         # One attempt, which never raises: the app comes up even when Postgres is down (within one connect
         # timeout), and keeps trying in the background, so a Postgres that boots after the app is picked up
@@ -170,6 +180,11 @@ def create_app() -> FastAPI:
         await start_embeddings()
         await start_web_search()
         await start_llm_router()
+        router_up = True
+        # A normal boot's phone listener, now that the database and the router are both up (see _db_ready). A call
+        # that arrived before the router would have been turned away as "can't be checked".
+        if db_is_ready():
+            await phone_service.start()
         # Make sure the document storage directory exists before the first
         # upload hits — stage_upload's mkdir is a fallback, not the owner.
         storage = doc_storage.storage_dir()
@@ -180,6 +195,10 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        # Phone calls first: each is hung up and recorded `shutdown`, while the model router, the voices' clients
+        # and the pool are still there for its last turn to close. That turn's final write joins the background
+        # saves that drain_background waits for below.
+        await phone_service.stop()
         stopping = list(_background)
         for task in stopping:
             task.cancel()

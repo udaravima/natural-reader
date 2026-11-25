@@ -704,3 +704,128 @@ async def test_a_held_reply_with_no_held_file_still_notes(search, bytes_asked):
     built = await _prompt(history, "ollama:a")   # the file is this model's own; the unlabeled reply is held anyway
     assert _held_notes(built) == [{"kind": "file_held_back", "names": [], "replies": 1}]
     assert "hunter2" in _all_text(built)
+
+
+# ---- Task 18: a phone line looks its answers up (R18.1, R18.2, R18.5) ----
+
+import math  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from server.chat.project_scope import ProjectScope  # noqa: E402
+from server.chat.prompt import PHONE_RULE  # noqa: E402
+from server.chat.tools import current_time  # noqa: E402
+
+# The investigator's tested sentence (diag-tools-report.md), word for word: the tests pin the exact wording.
+LOOK_IT_UP = ("Before you answer a question about the documents, look it up with a tool in this turn; what you said "
+              "earlier in the call is not a source.")
+PHONE_PROJECT = ProjectScope("p-1", "Front desk", (ScopeDoc(1, DOC, "Front desk hours.md", False),))
+HOURS = {"id": 7, "page": 1, "score": 0.772, "text": "The front desk is open Monday to Friday from 8:30 am to 6 pm."}
+
+
+def _phone(**over):
+    """A line's turn as the phone builds it: a project chat, spoken, on the phone channel, the document tools offered."""
+    base = dict(text="On weekdays, what are the open hours?", scope=PHONE_PROJECT.docs, tools=DOC_TOOLS,
+                tool_ctx=ToolContext("u", None, project=PHONE_PROJECT), spoken=True, channel="phone")
+    return _turn(**{**base, **over})
+
+
+async def test_a_phone_turn_prefetches_on_auto_even_with_document_tools(search):
+    """R18.1: gemma4:e4b with thinking off stops calling search_documents once a call holds one plain exchange, and
+    answers from a heading in the map; handed the app's own search it answered 60/60. So on a phone turn "auto" is
+    "on": the passages arrive as the app's search_documents exchange, and the tools stay offered."""
+    search["rows"] = [HOURS]
+    built = await build_context(_phone(), ChatConfig())
+    assert search["embeds"] == 1 and built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
+    assert [m.role for m in built.messages] == ["system", "user", "assistant", "tool"]
+    assert built.messages[1].content == "On weekdays, what are the open hours?"
+    assert built.messages[2].tool_calls == (ToolCall("prefetch1", "search_documents", {
+        "query": "On weekdays, what are the open hours?", "k": 4}),)
+    assert json.loads(built.messages[3].content)["passages"] == [{"ref": 1, "page": 1, "text": HOURS["text"]}]
+
+
+async def test_a_phone_turns_rules_say_how_the_search_appears_and_keep_the_phone_answer_step(search):
+    """The rules' prefetch flag follows the turn, so the system message says what the turn holds, the same as with
+    CHAT_PREFETCH=on; step 4 is still the phone's, with no page or file name to copy."""
+    system = (await build_context(_phone(), ChatConfig())).messages[0].content
+    assert "appears as a search_documents call just before your turn" in system
+    assert "4. Answer in plain spoken sentences, without page numbers or document names in brackets." in system
+    assert "page 7)" not in system and PHONE_RULE in system
+    assert system == (await build_context(_phone(), ChatConfig(prefetch="on"))).messages[0].content
+
+
+async def test_a_chat_turn_with_document_tools_still_does_not_prefetch_on_auto(search):
+    """Chat and Talk keep auto's 2026-10-05 reason: gemma4:e4b, handed passages, answered 5/9 against 9/9."""
+    search["rows"] = [HOURS]
+    chat = await build_context(_phone(channel="chat"), ChatConfig())
+    assert search["embeds"] == 0 and [m.role for m in chat.messages] == ["system", "user"]
+    assert "just before your turn" not in chat.messages[0].content
+
+
+async def test_prefetch_off_stays_off_on_a_phone_turn(search):
+    """CHAT_PREFETCH=off is the deployer's choice, and it holds for phone lines too."""
+    search["rows"] = [HOURS]
+    built = await build_context(_phone(), ChatConfig(prefetch="off"))
+    assert search["embeds"] == 0 and not built.prefetch_hit
+    assert "just before your turn" not in built.messages[0].content
+
+
+async def test_a_phone_turn_whose_prefetch_keeps_nothing_asks_for_a_look_up(search):
+    """R18.2: a follow-up that doesn't name its topic ("Yeah, sure." after an offer to check) keeps nothing. With
+    this note gemma4:e4b searched 5/5, without it 1/5. It goes on the request's copy of the caller's words, in
+    brackets after a blank line, as it was tested, never as a second system message (strict templates refuse one)."""
+    search["rows"] = [{**HOURS, "score": 0.491}]
+    built = await build_context(_phone(text="Yeah, sure."), ChatConfig())
+    assert search["embeds"] == 1 and not built.prefetch_hit
+    assert [m.role for m in built.messages] == ["system", "user"]
+    assert built.messages[-1].content == "Yeah, sure.\n\n(" + LOOK_IT_UP + ")"
+    assert LOOK_IT_UP not in built.messages[0].content
+
+
+async def test_a_phone_turn_with_prefetch_off_asks_for_a_look_up(search):
+    built = await build_context(_phone(text="Yeah, sure."), ChatConfig(prefetch="off"))
+    assert search["embeds"] == 0
+    assert built.messages[-1].content == "Yeah, sure.\n\n(" + LOOK_IT_UP + ")"
+
+
+async def test_no_look_up_note_when_the_prefetch_kept_passages(search):
+    search["rows"] = [HOURS]
+    built = await build_context(_phone(), ChatConfig())
+    assert built.messages[1].content == "On weekdays, what are the open hours?"
+    assert not any(LOOK_IT_UP in m.content for m in built.messages)
+
+
+@pytest.mark.parametrize("prefetch_mode", ["auto", "on", "off"])
+async def test_no_look_up_note_on_a_chat_turn(search, prefetch_mode):
+    search["rows"] = [{**HOURS, "score": 0.2}]
+    built = await build_context(_phone(channel="chat"), ChatConfig(prefetch=prefetch_mode))
+    assert built.messages[-1].content == "On weekdays, what are the open hours?"
+
+
+@pytest.mark.parametrize("tools", [(), (current_time.TOOL,)], ids=["no tools", "no document tools"])
+async def test_no_look_up_note_when_the_turn_offers_no_document_tools(search, tools):
+    """R18.5: the note asks for a tool, so it goes only with the document tools. Without them (a model without tool
+    support, a project with nothing indexed, no tool rounds) it would ask for something the model can't do; and with
+    tools off the text probe is off too, so a tool call the model wrote as text would be read down the line."""
+    search["rows"] = [{**HOURS, "score": 0.2}]
+    built = await build_context(_phone(tools=tools), ChatConfig())
+    assert built.messages[-1].content == "On weekdays, what are the open hours?"
+
+
+async def test_the_look_up_note_comes_once_after_an_unanswered_turn_merged_in(search):
+    """A reply that failed leaves the caller's earlier words at the end of the history: they join the new message,
+    and the note comes once, after both."""
+    history = [StoredMessage("u1", "user", "Hello?", [])]
+    built = await build_context(_phone(text="Yeah, sure.", history=history), ChatConfig(prefetch="off"))
+    assert [m.role for m in built.messages] == ["system", "user"]
+    assert built.messages[-1].content == "Hello?\n\nYeah, sure.\n\n(" + LOOK_IT_UP + ")"
+
+
+async def test_the_look_up_note_counts_against_the_history_window(search):
+    """The note is part of the prompt, so the trimming budget pays for it, as it does for the caller's own words."""
+    history = [StoredMessage("u1", "user", "x" * 400, []), StoredMessage("a1", "assistant", "y" * 400, [])]
+    turn = _phone(text="Yeah, sure.", history=history)
+    system = (await build_context(turn, ChatConfig(prefetch="off"))).messages[0].content
+    # Room for the rules, the caller's words and the history, and 10 tokens more: the note (about 35) doesn't fit.
+    window = ChatConfig().reply_reserve_tokens + math.ceil((len(system) + 2 + len("Yeah, sure.") + 800) / 4) + 10
+    built = await build_context(replace(turn, window=window), ChatConfig(prefetch="off"))
+    assert {"kind": "trimmed", "messages": 2, "attachments": 0} in built.notes

@@ -151,6 +151,8 @@ async def patch_user(
     target = await users.get_user(conn, user_id)  # need oidc_sub for KC calls
     if target is None:
         raise HTTPException(status_code=404, detail="User not found")
+    if await users.is_line(conn, user_id):  # a line's service user is changed only through its line
+        raise HTTPException(status_code=409, detail={"reason": "phone_line"})
     sub = target["oidc_sub"]
     caps = _capabilities_after(data, set(target["capabilities"]))  # refuses before any write
 
@@ -346,6 +348,8 @@ async def delete_user(
     if target is None:
         # 404 for never-existed == already-deleted: no enumeration signal.
         raise HTTPException(status_code=404, detail="User not found")
+    if await users.is_line(conn, user_id):  # it goes with its line, never alone
+        raise HTTPException(status_code=409, detail={"reason": "phone_line"})
     if target["id"] == principal.user_id:
         raise HTTPException(status_code=409, detail={"reason": "self"})
     if target["id"] == users.SEED_ADMIN_ID:

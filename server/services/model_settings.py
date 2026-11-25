@@ -30,12 +30,13 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, TypeVar
 from urllib.parse import urlsplit
 
 from ..chat.reader import reader_model_source
 from ..llm.providers.base import ProviderConfig
+from ..llm.types import CallSettings
 from . import console_settings
 from .console_settings import Section, Setting
 from .inference_limits import InferenceLimits, clamp, load_inference_limits
@@ -257,6 +258,45 @@ def lookup(mapping: Mapping[str, V], model_id: str) -> V | None:
     return None
 
 
+# ---------- whether a model may answer ----------
+
+def console_offers(ms: ModelsSettings, model_id: str) -> bool:
+    """The console can only narrow the environment's list: an empty selection leaves it as it is."""
+    return not ms.chat_models or any(same_model(model_id, chosen) for chosen in ms.chat_models)
+
+
+def model_offered(ms: ModelsSettings, model_id: str, router: Any) -> bool:
+    """The offline half of `model_refusal`: the environment allows the model (a provider serves it, and it is on
+    that provider's INFERENCE_*MODELS list, if any), and the console's chat list offers it. No network."""
+    return router.is_allowed(model_id) and console_offers(ms, router.canonical_id(model_id))
+
+
+async def model_refusal(ms: ModelsSettings, model_id: str, router: Any) -> str | None:
+    """Why `model_id` may not answer now, or None when it may. The one set of rules for a chat turn, a phone call
+    and a line being saved (R10.10, R10.11), in the chat's order:
+    - "not_allowed": `model_offered` says no;
+    - "not_listed": its provider no longer has it (a stale saved id). The provider's list is cached; a provider
+      that can't be reached passes (the router's own fail-open), and the turn reports it.
+    Nothing is asked of the model itself. `ms` is the console's settings, read with their fail-open
+    (`settings_or_env`, or the chat route's own short read)."""
+    if not model_offered(ms, model_id, router):
+        return "not_allowed"
+    if not await router.is_listed(router.canonical_id(model_id)):
+        return "not_listed"
+    return None
+
+
+async def settings_or_env(conn) -> ModelsSettings:
+    """The console's model settings, read on `conn` inside a savepoint, so a failed read leaves the caller's own
+    transaction usable. When they can't be read, the environment's apply (the chat's fail-open)."""
+    try:
+        async with conn.transaction():
+            return await load_models_settings(conn, os.environ)
+    except Exception:  # noqa: BLE001 — a database blip mustn't refuse every model
+        logger.warning("The model settings couldn't be read: using the environment's", exc_info=True)
+        return from_env()
+
+
 # ---------- locality ----------
 
 def is_ollama_cloud(name: str) -> bool:
@@ -348,6 +388,17 @@ def num_ctx_for(ms: ModelsSettings, model_id: str, *, local: bool, user_value: i
     if size is not None:
         return size
     return clamp(user_value if user_value is not None else DEFAULT_LOCAL_NUM_CTX, None, limits)[0]
+
+
+def sized_settings(ms: ModelsSettings, router: Any, model_id: str, settings: CallSettings,
+                   limits: InferenceLimits) -> CallSettings:
+    """`settings` with the context size a turn's requests to `model_id` send (`num_ctx_for`, the person's own value
+    being `settings.num_ctx`). A chat turn sizes its settings here, and so does a phone line's load request (R17.2):
+    Ollama reloads a model whose `num_ctx` changes, so a load must ask for the size the call's turns will."""
+    provider, name = router.resolve(model_id)
+    return replace(settings, num_ctx=num_ctx_for(ms, f"{provider.config.name}:{name}",
+                                                 local=sizes_context(provider.config, name),
+                                                 user_value=settings.num_ctx, limits=limits))
 
 
 # ---------- windows and the model list ----------

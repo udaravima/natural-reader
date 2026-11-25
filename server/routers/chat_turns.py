@@ -199,10 +199,6 @@ async def _models_settings() -> model_settings.ModelsSettings:
         return model_settings.from_env()
 
 
-def _console_allows(ms: model_settings.ModelsSettings, model_id: str) -> bool:
-    return not ms.chat_models or any(model_settings.same_model(model_id, chosen) for chosen in ms.chat_models)
-
-
 async def _check_project(session_id: str, principal: Principal, project_id: str, session_exists: bool) -> None:
     """Spec §5.1, every project turn: the same check as the project document
     routes (a non-member admin is refused too). Refused, the chat falls back
@@ -365,14 +361,14 @@ async def post_turn(session_id: SessionId, request: Request,
     pins = info.pins if info is not None else (body.session.pins if body.session else [])
     if not body.message.content.strip() and not attachments and not pins:
         raise refusal(422, "empty_message", "Type a message or attach something first.")
-    if not llm.is_allowed(body.model):
+    # The environment's list, the console's narrowing of it, then the provider's own list: the checks a phone call
+    # and a line's save make too (model_settings.model_refusal, R10.10).
+    why = await model_settings.model_refusal(await _models_settings(), body.model, llm)
+    if why == "not_listed":
+        raise refusal(422, "model_not_allowed", "This model isn't available.")
+    if why is not None:
         raise refusal(422, "model_not_allowed", "That model isn't available on this server.")
     model_id = llm.canonical_id(body.model)
-    # The console can only narrow the env's list; an empty selection leaves it as it is.
-    if not _console_allows(await _models_settings(), model_id):
-        raise refusal(422, "model_not_allowed", "That model isn't available on this server.")
-    if not await llm.is_listed(model_id):
-        raise refusal(422, "model_not_allowed", "This model isn't available.")
     caps = await _capabilities(llm, model_id)
     for kind, flag, word in (("image", caps.vision, "images"), ("audio", caps.audio, "audio")):
         if flag is False and any(a.kind == kind for a in attachments):

@@ -82,14 +82,7 @@ class SpeechAccess:
         running: a database blip must not reload a model."""
         if not self.from_row:
             return service.get_transcriber()
-        chosen = service.chosen_engine(self.options)
-        if chosen == "google":
-            # The first recognizer that lists the language, else the first (spec 2026-11-04-google-recognizers).
-            current = service.get_transcriber(engine="google", recognizers=self.recognizer_names)
-            ticked = self.recognizers(current)
-            return service.google_for(ticked, language) if ticked else current
-        return service.get_transcriber(wanted=catalogue.for_language(self.options, language),
-                                       engine=chosen, default=catalogue.wanted(self.options))
+        return service.engine_for(self.options, language)
 
     @property
     def recognizer_names(self) -> tuple[str, ...]:
@@ -98,12 +91,7 @@ class SpeechAccess:
     def recognizers(self, current=None) -> list:
         """The Google recognizers in use, in order; empty unless Google hears speech (or when the running engine was
         put in place from outside, which is kept as it is)."""
-        if not self.from_row or service.chosen_engine(self.options) != "google":
-            return []
-        current = current or service.get_transcriber(engine="google", recognizers=self.recognizer_names)
-        if getattr(current, "recognizer", None) is None or not self.recognizer_names:
-            return []
-        return service.google_engines(self.recognizer_names)
+        return service.google_in_use(self.options, current) if self.from_row else []
 
     async def learn_languages(self) -> list:
         """Read each recognizer's languages (cached by each engine, STATUS_TTL_S) so a clip is routed by them, even

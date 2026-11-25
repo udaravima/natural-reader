@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Phone lines: ring a number and talk to an assistant that knows a
+  project.** An admin makes a line in Admin → Phone lines (a name, who answers,
+  the project it knows, a model, a voice, a welcome message and limits), pastes
+  the three dialplan lines the console shows into Asterisk, and switches the
+  line on. A call is the same conversation as Talk (listen, think, speak, and a
+  caller who talks over the answer cuts it in), run on the server over
+  Asterisk's AudioSocket; each call is a chat the console shows as a transcript,
+  with how long it lasted and how long the first sound took. The listener is off
+  until `PHONE_AUDIOSOCKET_LISTEN` is set, only the peers in
+  `PHONE_AUDIOSOCKET_ALLOW` may connect, and the knobs are `PHONE_PBX_ADDRESS`,
+  `PHONE_MAX_CALLS`, `PHONE_IDLE_S`,
+  `PHONE_MAX_UTTERANCE_S` and `PHONE_MODEL_KEEP_ALIVE`. Each line has a longest
+  call, a calls-at-once cap and
+  a daily token budget; a project is attached only by a maintainer or owner, and
+  removing the line from its members closes the line. Phase 1 is English only,
+  and the app sends nothing to Asterisk: the admin pastes the lines in.
+  `scripts/phone_fake_pbx.py` calls a line the way Asterisk does, for trying a
+  setup without a phone system. Tried on real calls through Asterisk. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md).
 - **Google's Chirp 3 HD voices can read the chat and Talk.** A third choice
   under Admin → Chat options → Voice for the chat and Talk, beside Kokoro and
   Gemini-TTS (`CHAT_VOICE=chirp` for a deployment). Chirp makes a sentence in
@@ -22,9 +41,92 @@ All notable changes to this project will be documented in this file.
   `GOOGLE_TTS_LANGUAGE`, else American), and each person can pick their own
   under Settings → Chat → Reply accent. Sinhala and Tamil sentences are read
   as before.
+- **Admin → Calls shows every phone line's calls, and a call in progress as it
+  happens.** A new Calls section lists the calls of all lines, newest first, 25
+  at a time (More loads the next 25, up to the newest 200), with the line's name, start, length, end
+  reason, turns and slowest first sound; Transcript opens one. The list and an
+  open transcript read again about every 2 seconds while a call on screen is in
+  progress and about every 10 seconds otherwise, only while the tab is visible.
+  A call in progress shows no turn count or timings until it ends.
+  A call's transcript now shows each turn's timing beside its own messages (the
+  caller's line with when they stopped speaking, the reply with its first sound
+  and when it was heard, a misheard clip as "Not heard at m:ss"), matched by
+  message id; calls recorded before this keep the old list of timings.
+  Refresh reads "Refreshing…" while it works and then "Updated hh:mm:ss"; the
+  line editor's list gets the same. New API: `GET /v1/admin/phone/calls`
+  (admin only, paged by a cursor).
+
+### Changed
+
+- **A phone call no longer says "Still checking. Thanks for waiting."** The
+  "Let me check." / "One moment." filler stays. `PHONE_CHECKING_S` is gone: a
+  value left in `.env` is ignored. A line's stored "Still checking" recording is
+  ignored too; nothing needs to be re-saved.
 
 ### Fixed
 
+- **A phone line now looks up its documents for every question.** Before,
+  after the first exchange of a call it often offered to look something up
+  ("Would you like me to check?") instead of doing it, or answered from a
+  heading in the project's list of documents: in one test call it gave no
+  fact from its document in 10 turns. Now the app searches the line's project
+  with the caller's words before the model answers, and hands it what it
+  finds; when that search keeps nothing (a "Yeah, sure."), the model is asked
+  to look the answer up itself in this turn. That request is never stored. A
+  question that finds passages costs about 3 seconds more before the first
+  word on a CPU-only machine, and the caller hears the filler phrase while the
+  model reads them. `CHAT_PREFETCH=off` turns the search off for phone lines
+  too; in the chat, `auto` is unchanged. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#how-a-line-finds-its-answers).
+- **A phone call's first answer comes much sooner.** The first question of a call
+  whose prompt the model hadn't read yet (the first call after the model loads, or
+  the first of the day) waited while it read the line's whole prompt: about 2,150
+  tokens, 25 to 32 seconds on a CPU-only machine. Now a call offers the model only
+  the document search and the clock. The page-reading and extraction tools,
+  which a caller never needs, took 586 of those tokens, about 640 with the
+  rules' sentences about them (the outline tool is dropped too). And the
+  line's prompt is read while the welcome plays, so the first answer reads only
+  the caller's words and the search. Measured with the question sent 9 seconds
+  into the call, the model's first words came 9 to 11 seconds after it, instead of
+  25 to 32. The read is thrown away and charges no budget; it follows
+  `PHONE_MODEL_KEEP_ALIVE` (`0` turns it off), and only a model on an Ollama you
+  host gets one. The chat and Talk are unchanged. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#a-calls-first-answer).
+- **A phone line's first answer no longer waits for its model to load.** Ollama
+  unloads a model after 5 idle minutes, and phone turns asked it to keep none,
+  so the first caller after a quiet spell waited for the model to load again
+  (about 30 s for gemma4:e4b on a CPU-only machine). Now the model is
+  loaded when the phone listener starts and kept loaded while the line is on:
+  the app asks Ollama again every 2 minutes, each call asks as it connects
+  (without waiting), and every turn of a call carries the same keep-alive. The
+  request loads the model without generating anything, with the same context
+  size as the call's turns, so the first answer never reloads it. The cost is
+  the model's memory while a line is on (about 2 GB for gemma4:e4b).
+  `PHONE_MODEL_KEEP_ALIVE` (default 15 minutes, capped by
+  `INFERENCE_KEEP_ALIVE_MAX`) is how long it stays after the line is off; `0`
+  turns this off and restores the old behaviour exactly, and a cap of 0 keeps
+  nothing. Only a model on an Ollama you host is loaded: Gemini, OpenAI-compatible
+  APIs, Ollama cloud models (`-cloud`, `:cloud`) and ollama.com get no request.
+  It doesn't fight for memory: a model someone loaded at another context size
+  is left alone; while a call lasts, a model that isn't in memory is loaded
+  only if a live call uses it (models already loaded keep being refreshed); and
+  if the lines' models don't fit in memory together, the one pushed out by the
+  other is no longer refreshed (its calls load it as they connect) until the
+  backend restarts. See
+  [`docs/PHONE_LINES.md`](docs/PHONE_LINES.md#the-lines-model-stays-loaded).
+- **Most file names, web addresses and underscores are read the way they're
+  written.** Chat read-aloud, Talk and phone calls say "dot" in file names and
+  web addresses (`Architecture.md` is "Architecture dot md", `example.com` is
+  "example dot com"), where a voice used to read the dot as the end of a
+  sentence. Each underscore inside a word is said as "underscore"
+  (`room_number` is "room underscore number"), and is no longer taken as
+  emphasis when there are two of them. Abbreviations, decimals, version
+  numbers and degrees (`e.g.`, `3.5`, `v2.3.0`, `B.Com`) keep their dots, and
+  so do some less usual names, for example `.env` (nothing before the dot),
+  `archive.7z` (an extension that starts with a digit), `notes.markdown` (one
+  longer than five letters), `photo.HEIC` (in capitals, and not a common one)
+  and `X.COM` (one letter before the dot). Documents read aloud in the reader,
+  and pages read by the Chrome extension, don't get these rules yet.
 - **Cloud requests reuse their connections.** Every request to Google's
   speech-to-text and Gemini-TTS opened a new connection, and so did nearly
   every chat model request: TCP and TLS set-up (about 0.1 s from Colombo to

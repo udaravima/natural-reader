@@ -156,20 +156,21 @@ async def _default_token() -> tuple[str, str | None]:
 
 
 async def google_speak(text: str, voice: str, speed: float, env: Mapping[str, str] = os.environ, *,
-                       accent: str | None = None,
+                       accent: str | None = None, sample_rate_hz: int | None = None,
                        transport: httpx.AsyncBaseTransport | None = None,
                        token: Callable[[], Awaitable[tuple[str, str | None]]] = _default_token,
                        ) -> tuple[bytes, float]:
-    """One sentence, spoken by Gemini-TTS: (WAV bytes, seconds)."""
+    """One sentence, spoken by Gemini-TTS: (WAV bytes, seconds). `sample_rate_hz` asks Google for that rate (the
+    phone lines ask for 8000); left out, the request is the chat's and Talk's, unchanged."""
     body = {"input": {"text": text},
             "voice": {"languageCode": language_of(text, env, accent), "name": voice,
                       "modelName": (env.get("GOOGLE_TTS_MODEL") or "").strip()},
-            "audioConfig": _audio_config(speed)}
+            "audioConfig": _audio_config(speed, sample_rate_hz)}
     return await _synthesize(body, env, transport, token, GEMINI)
 
 
 async def chirp_speak(text: str, voice: str, speed: float, env: Mapping[str, str] = os.environ, *,
-                      accent: str | None = None,
+                      accent: str | None = None, sample_rate_hz: int | None = None,
                       transport: httpx.AsyncBaseTransport | None = None,
                       token: Callable[[], Awaitable[tuple[str, str | None]]] = _default_token,
                       ) -> tuple[bytes, float]:
@@ -182,9 +183,10 @@ async def chirp_speak(text: str, voice: str, speed: float, env: Mapping[str, str
 
     async def run(language: str, part: str) -> tuple[bytes, float]:
         if language == "si-LK":
-            return await google_speak(part, voice, speed, env, accent=accent, transport=transport, token=token)
+            return await google_speak(part, voice, speed, env, accent=accent, sample_rate_hz=sample_rate_hz,
+                                      transport=transport, token=token)
         body = {"input": {"text": part}, "voice": {"languageCode": language, "name": f"{language}-Chirp3-HD-{voice}"},
-                "audioConfig": _audio_config(speed)}
+                "audioConfig": _audio_config(speed, sample_rate_hz)}
         return await _synthesize(body, env, transport, token, CHIRP)
     if len(runs) == 1:
         return await run(*runs[0])
@@ -222,8 +224,10 @@ def language_runs(text: str, env: Mapping[str, str] = os.environ, english: str |
     return [(language, " ".join(sentences)) for language, sentences in runs]
 
 
-def _audio_config(speed: float) -> dict:
+def _audio_config(speed: float, sample_rate_hz: int | None = None) -> dict:
     config: dict = {"audioEncoding": "LINEAR16"}
+    if sample_rate_hz:
+        config["sampleRateHertz"] = sample_rate_hz
     if speed and abs(speed - 1.0) > 1e-6:
         config["speakingRate"] = speed
     return config

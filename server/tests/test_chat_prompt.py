@@ -821,6 +821,13 @@ def test_a_spoken_turn_is_told_how_to_talk():
     assert "read aloud" not in system_rules(None, [], has_pins=False)
 
 
+def test_phone_rule_only_on_phone_turns():
+    from server.chat.prompt import PHONE_RULE, SPOKEN_RULE
+    phone = system_rules(None, [], has_pins=False, spoken=True, phone=True)
+    assert PHONE_RULE in phone and phone.index(SPOKEN_RULE) < phone.index(PHONE_RULE)
+    assert PHONE_RULE not in system_rules(None, [], has_pins=False, spoken=True)
+
+
 def test_the_clock_line_comes_before_the_live_line_and_only_with_the_tool():
     """"Anything about today" sends a question to the web: a question about the time must reach the clock first."""
     with_clock = system_rules(FIELD(), [*DOC_TOOLS, *AUTO_WEB, TOOLS["current_time"]], has_pins=False)
@@ -851,3 +858,69 @@ def test_no_steps_win_line_for_the_librarian_house_rules_or_a_chat_without_docum
     assert STEPS_WIN not in system_rules(FIELD(), SETS["doc"], has_pins=False, assistant_name="The Librarian")
     assert STEPS_WIN not in system_rules(FIELD(), SETS["doc"], has_pins=False, profile="Be kind.", persona=False)
     assert STEPS_WIN not in system_rules(None, [], has_pins=False, profile="You are an old storyteller.")
+
+
+# ---- Phone lines: a caller only hears the answer (final fix F2) ----
+
+def _chat_rules_digest() -> str:
+    """One sha256 over the chat's and Talk's rules for every scope, tool set, pins, profile and spoken setting.
+    Pinned below, so a phone-only change can't move a byte of them."""
+    import hashlib
+    from server.chat.prompt import system_rules
+    tool_sets = [[], DOC_TOOLS, [*DOC_TOOLS, *AUTO_WEB], [*DOC_TOOLS, *ASK_WEB], [*DOC_TOOLS, *APPROVED_WEB],
+                 [*DOC_TOOLS, TOOLS["current_time"]], list(REGISTRY)]
+    texts = []
+    for scope, tools, pins, profile, spoken in itertools.product(
+            ("document", "project", "none"), tool_sets, (False, True), ("", "You are an old storyteller."),
+            (False, True)):
+        kw = dict(has_pins=pins, profile=profile, spoken=spoken, today="Today is Sunday, 22 November 2026.")
+        if scope == "project":
+            texts.append(system_rules(None, tools, project=PROJECT(), has_map=True, **kw))
+        else:
+            texts.append(system_rules(FIELD() if scope == "document" else None, tools, **kw))
+    texts.append(system_rules(None, DOC_TOOLS, has_pins=False, project=PROJECT(), has_map=True,
+                              assistant_name="The Librarian", spoken=True))
+    return hashlib.sha256("\n\x00\n".join(texts).encode()).hexdigest()
+
+
+# Today's chat and Talk rules, taken at 2b6fe87 before F2 (print _chat_rules_digest() from a scratch script). A
+# deliberate chat wording change updates the goldens above and this digest together.
+CHAT_RULES_DIGEST = "5f344a4818172613dda2c6b3f11ee260b5ffe021e981f774c87fbd445f6e924a"
+
+
+def test_the_chat_and_talk_rules_are_unchanged_by_the_phone_rules():
+    assert _chat_rules_digest() == CHAT_RULES_DIGEST
+
+
+def _phone_project_rules(**kw) -> str:
+    """A phone turn as a line makes one: a profile, a project with its map, the document tools and the clock, no
+    web (the orchestrator turns it off on the phone), spoken."""
+    from server.chat.prompt import system_rules
+    tools = [*DOC_TOOLS, TOOLS["document_outline"], TOOLS["current_time"]]
+    return system_rules(None, tools, has_pins=False, project=PROJECT(), has_map=True, spoken=True, phone=True,
+                        profile=kw.pop("profile", "You are the front desk of the town library."), **kw)
+
+
+def test_the_phone_rules_never_show_a_bracketed_citation():
+    """A caller hears every character: the steps must not teach the "(Guide.md, page 7)" the phone rule forbids."""
+    rules = _phone_project_rules()
+    for needle in ("(Guide.md, page 7)", "cites its pages", "(page 7)", "page 7)"):
+        assert needle not in rules, needle
+    assert ("4. Answer in plain spoken sentences, without page numbers or document names in brackets. When the "
+            "documents don't cover part of the question, say so plainly; you may add what you know in general, "
+            "introduced as not from the documents.") in rules
+    assert "Whatever your role, an answer from the documents follows the steps below.\n" in rules
+    assert "Cite text the user pinned" not in rules
+    assert "Cite text the user pinned" not in _phone_project_rules(profile="", assistant_name="The Librarian")
+
+
+def test_the_phone_rule_is_the_ruling_verbatim():
+    from server.chat.prompt import PHONE_RULE
+    assert PHONE_RULE == (
+        "This is a phone call: the caller only hears you. Don't cite sources the way the steps above show: say no "
+        "page numbers, document numbers, file names or file extensions (such as .md or .pdf), links, ids or "
+        "symbols, and put nothing in brackets. If it helps to say where an answer comes from, describe the "
+        "document in a few plain words, such as \"the opening hours notice\". Look things up yourself; never ask "
+        "the caller whether you should. If the documents don't have the answer, say so. If you didn't catch "
+        "something, ask the caller to repeat it.")
+    assert _phone_project_rules().endswith(PHONE_RULE)

@@ -163,6 +163,60 @@ class Router:
             return True
         return name in names
 
+    def holds_models(self, model_id: str) -> bool:
+        """Whether `model_id` runs in the memory of a server the deployer hosts: a self-hosted Ollama, by the rule
+        that says a request must name its context size (`model_settings.sizes_context`). An Ollama cloud model
+        (`-cloud`, `:cloud`), ollama.com and every other kind of provider are hosted APIs: nothing to load, and a
+        request there may cost money. The one test for `load` and `in_memory`, and for whoever skips work they
+        would refuse."""
+        # Imported here: model_settings imports the chat's reader, which imports this module.
+        from ..services.model_settings import sizes_context
+        try:
+            provider, name = self.resolve(model_id)
+        except UnknownModel:
+            return False
+        return sizes_context(provider.config, name)
+
+    async def load(self, model_id: str, settings: CallSettings) -> bool:
+        """Have the server that serves `model_id` load it into memory now, without generating anything, with what a
+        turn sending `settings` would send (a changed option, `num_ctx` above all, makes Ollama reload a model).
+        True once loaded; False, with no request sent, for a model that isn't self-hosted (`holds_models`). Raises
+        as `stream_chat` does when the server can't be reached or refuses. Nothing is billed or recorded: a load is
+        no turn."""
+        if not self.holds_models(model_id):
+            return False
+        provider, name = self.resolve(model_id)
+        return await provider.load(name, settings)
+
+    async def read_prompt(self, model_id: str, messages: list[Message], tools: list[ToolSpec],
+                          settings: CallSettings) -> bool:
+        """Have the server that serves `model_id` read `messages` and `tools` into its prompt cache now, as a turn
+        sending `settings` would send them, generating at most one token, which is thrown away: the turn that then
+        starts with them reads only what follows. True once read; False, with no request sent, for a model that isn't
+        self-hosted (`holds_models`): a hosted API caches nothing for us, and a request could cost money. Raises as
+        `stream_chat` does. Nothing is billed or recorded: it is no turn."""
+        if not self.holds_models(model_id):
+            return False
+        provider, name = self.resolve(model_id)
+        return await provider.read_prompt(name, messages, tools, settings)
+
+    async def in_memory(self, model_id: str) -> dict[str, int | None] | None:
+        """The models the server that serves `model_id` holds in memory now, as {canonical id: the context size it
+        is loaded with (None when not reported)}; None, with no request sent, for a model that isn't self-hosted,
+        and None when the server didn't answer."""
+        if not self.holds_models(model_id):
+            return None
+        provider, _ = self.resolve(model_id)
+        held = await provider.in_memory()
+        return None if held is None else {f"{provider.config.name}:{n}": size for n, size in held.items()}
+
+    async def has_model(self, model_id: str) -> bool:
+        """Whether the provider's own model list has `model_id` (list_models's cache, as `is_listed` reads it).
+        Unlike `is_listed`, it raises when the provider can't be asked and logs nothing: the caller decides what an
+        outage means, and how often to say so."""
+        provider, name = self.resolve(model_id)
+        return name in await provider.list_models()
+
     async def list_models(self) -> tuple[list[ModelInfo], list[str]]:
         async def listing(p: Provider) -> list[ModelInfo]:
             names = await p.list_models()

@@ -15,11 +15,38 @@ export function zoneOptions(current) {
   return zones;
 }
 
+/** A timestamp as `YYYY-MM-DD HH:MM` (24 hour) in `zone`, with the same fallbacks as formatDay. */
+export function formatMoment(value, zone) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  const format = (timeZone) => new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(date).replace(',', '');
+  try {
+    return format(zone || 'UTC');
+  } catch {
+    return format('UTC');
+  }
+}
+
 /** A timestamp as YYYY-MM-DD in `zone`. A zone Intl refuses reads as UTC; a value that isn't a date shows its first 10 characters. */
 export function formatDay(value, zone) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
   const format = (timeZone) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+  try {
+    return format(zone || 'UTC');
+  } catch {
+    return format('UTC');
+  }
+}
+
+/** A timestamp's time of day as `HH:MM:SS` (24 hour) in `zone`; a zone Intl refuses reads as UTC. */
+export function formatClock(value, zone) {
+  const date = new Date(value);
+  const format = (timeZone) => new Intl.DateTimeFormat('en-GB', {
+    timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(date);
   try {
     return format(zone || 'UTC');
   } catch {

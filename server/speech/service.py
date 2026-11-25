@@ -33,8 +33,8 @@ MODELS_LOADED_DEFAULT, MODELS_LOADED_RANGE = 3, (1, 4)   # local models kept loa
 LOAD_POLL_S = 0.1   # how often a recording waiting for its model asks whether it has loaded
 
 __all__ = ["AlreadyRunning", "Busy", "ENGINES", "LOCAL_WAIT_S", "MAX_AUDIO_BYTES", "MAX_AUDIO_SECONDS",
-           "RETRY_AFTER_S", "chosen_engine", "engine_name", "engine_needs", "engine_source", "engines",
-           "get_transcriber", "heal", "models_loaded", "reset_for_tests", "transcribe_for"]
+           "RETRY_AFTER_S", "chosen_engine", "engine_for", "engine_name", "engine_needs", "engine_source", "engines",
+           "get_transcriber", "google_in_use", "heal", "models_loaded", "reset_for_tests", "transcribe_for"]
 
 ENGINES = ("local", "openai", "google")
 _LABELS = {"local": "Whisper on this server", "openai": "An OpenAI-compatible server", "google": "Google Cloud"}
@@ -331,6 +331,32 @@ def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | N
     if isinstance(_transcriber, _MissingPackage):
         logger.warning("Voice input can't start: %s", _transcriber._detail)
     return _transcriber
+
+
+def google_in_use(options, current: Transcriber | None = None) -> list:
+    """The Google recognizers in use under the deployment's chat options, in order; empty unless Google hears speech
+    (or when the running engine was put in place from outside, which is kept as it is)."""
+    if chosen_engine(options) != "google":
+        return []
+    names = recognizer_names(options)
+    current = current or get_transcriber(engine="google", recognizers=names)
+    if getattr(current, "recognizer", None) is None or not names:
+        return []
+    return google_engines(names)
+
+
+def engine_for(options, language: str | None = None) -> Transcriber:
+    """The engine that hears `language` under the deployment's chat options: the model the admin offered for it,
+    else the deployment's model (a change reaches a worker here). Talk's speech route and a phone call both ask
+    this, so a call hears with the engine an admin chose, whatever this worker last ran."""
+    chosen = chosen_engine(options)
+    if chosen == "google":
+        # The first recognizer that lists the language, else the first (spec 2026-11-04-google-recognizers).
+        current = get_transcriber(engine="google", recognizers=recognizer_names(options))
+        ticked = google_in_use(options, current)
+        return google_for(ticked, language) if ticked else current
+    return get_transcriber(wanted=catalogue.for_language(options, language), engine=chosen,
+                           default=catalogue.wanted(options))
 
 
 def _now() -> float:

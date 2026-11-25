@@ -263,6 +263,7 @@ jump to the first and last.
 | **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
 | **Chat** | The assistant's profile, the web search mode and whether the microphone is on ([below](#speaking-a-message)) |
 | **Defaults for users** | What read-aloud, voice, speed, thinking and speech language show for someone who hasn't chosen them |
+| **Phone lines** | Numbers people can ring to talk to an assistant that knows one project ([below](#phone-lines-calls-answered-from-a-project)) |
 | **Usage** | Token use by model, by person and by day ([below](#usage-who-spent-tokens-on-which-model)) |
 | **Deployment** | The deployment timezone, and the server's own values read-only |
 
@@ -754,6 +755,78 @@ only be changed in `.env` on the server, with a restart. **Nothing secret
 shows:** the session secret, sign-in client secret and Keycloak admin client
 secret read only **set** or **not set**, and a URL never shows a password or
 query.
+
+### Phone lines: calls answered from a project
+
+A **phone line** lets anyone who rings a number talk to an assistant that answers from
+one project's documents. Setup, the settings and troubleshooting for whoever runs the
+server are in [PHONE_LINES.md](PHONE_LINES.md). What an admin does here:
+
+**What you need first.** The server's listener has to be on (the section says
+"The phone listener is off. Set PHONE_AUDIOSOCKET_LISTEN and PHONE_AUDIOSOCKET_ALLOW, then
+restart." until it is), and you must be a maintainer or owner of the project the line
+will know: the **Knows** list shows only those. Phase 1 speaks English only, and the
+app doesn't change your phone system: you paste three lines into it yourself.
+
+**The list.** Above it a line reads "Listening for your phone system at … · N calls now".
+Each line shows its name and what a caller would get now: **On**, **Off**, or, in amber,
+why a line that is switched on turns callers away: **Closed: no project**, **Closed: no
+access**, **Closed: token budget used up** or **Closed: model withdrawn**. While the
+server's listener is off, a line that would answer reads **On · the listener is off**. (One
+cause the list can't see is a model its provider no longer has: that line reads **On** and
+callers hear "closed"; [why](PHONE_LINES.md#troubleshooting).) Below that: who answers and
+which project, and how many calls it has had today. **Edit** opens it. **New line** makes
+one.
+
+**Making or editing a line.**
+
+| Control | What it does |
+|---|---|
+| **Name** | What you call the line (up to 60 characters). |
+| **Answers as** | The assistant profile that sets its manner; **Default profile** if none. A profile switched off in the profile library stays the line's but reads "<name> (switched off: answers as the default profile)", here and in the list, because that is what callers then get. |
+| **Knows** | The project callers hear answers from. **No project yet** until you pick one. Picking one shows "Anyone who calls this line hears answers drawn from this project." and the line needs a project before it can be switched on. A line on a project you don't maintain or own (another admin's) shows it as "<project> (you don't maintain it)"; you can still edit the rest of the line. |
+| **Model** | The chat model that writes the answers. |
+| **Voice** | The voice engine, the voice and (for Google's voices) the English accent. |
+| **Welcome message** | The first thing a caller hears. Keep it saying that the caller is talking to an automated assistant. |
+| **Hear the welcome** | Plays the saved welcome as callers hear it. Save first to hear a change. |
+| **Longest call (minutes)** | 1 to 60 (a fraction such as 1.5 is fine). The call ends at the limit. Default 10. |
+| **Calls at once** | 1 to 20 callers on this line together; the next hears "busy". Default 2. |
+| **Tokens a day** | The most model tokens the line may spend a day. As the hint beside it says, "Empty: the server's default. 0: no limit." (the server's default is its daily budget, or none). A spent budget closes the line until the next day. |
+| **Line is on** | Switches the line on. It starts off, and can't be on without a project. |
+| **Save line** | Saves, and renders the line's recorded phrases in its voice (this takes a few seconds). |
+| **Cancel** / **Back to the lines** | Leaves the editor. With unsaved changes you are asked first. |
+| **Delete line** | Deletes the line, its calls and their transcripts, after you confirm. |
+
+If the project's maintainers remove the line from its members the editor says "No access
+to <project>", and callers hear that the line is closed. **Give it access again** puts the
+line back (it works only for a maintainer or owner of that project; anyone else is told so).
+
+**Connect your phone system (Asterisk).** On a saved line, the editor shows the
+three lines to paste into Asterisk's dialplan, already holding this line's id and your
+server's address, and **Copy** puts them on the clipboard. Pick any free extension: the one
+shown is an example. If the listener is off, or the server has no address a phone
+system could dial, this area says what to set instead of showing lines that wouldn't work.
+
+**Calls.** Under the lines, **Calls** lists the line's calls, newest first: the time,
+how long, why it ended (caller hung up, reached the time limit, no one spoke, token budget
+used up, line was busy or closed, something went wrong, app was restarted), the number of
+turns and the slowest first sound. **Transcript** opens what was said ("Caller" and "Line").
+Each turn's timing sits beside its own messages: the caller's line says when they stopped
+speaking (minutes and seconds since the call began), and the line's reply says "first sound
+X.X s · heard after Y.Y s", both counted in seconds from when the caller stopped speaking, plus
+what went wrong, if anything (a sentence was skipped, said nothing, the answer failed).
+Something the caller said that couldn't be made out has a line of its own, "Not heard at 0:30".
+(A call recorded before this keeps a separate list of timings under its transcript.)
+**Delete call** removes the call and its transcript after you confirm. **Refresh** reloads
+the list and an open transcript: it reads "Refreshing…" while it works, then "Updated hh:mm:ss".
+Calls turned away as busy or closed are listed too, with no transcript. No audio is kept, and
+no caller's number.
+
+**Admin → Calls** lists the calls of every line in one place, newest first, 25 at a time
+(**More** loads the next 25, up to the newest 200 calls), with the line's name on each row and the same transcripts. A call
+in progress updates itself about every 2 seconds while the tab is open and visible (new calls
+appear by themselves, within about 10 seconds), and its transcript grows as the line writes its reply (within a few seconds); its
+turn count and timings appear when the call ends.
 
 ### Projects: every project on the server
 

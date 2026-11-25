@@ -69,6 +69,9 @@ class FakeRouter:
     provider_name: str = "ollama"                 # the model-id prefix it answers to
     url: str = "http://localhost:11434"           # the provider's base URL
     calls: list = field(default_factory=list)
+    loads: list = field(default_factory=list)     # each load(): {"model", "settings"}
+    prereads: list = field(default_factory=list)  # each read_prompt(): {"model", "messages", "tools", "settings"}
+    resident: dict | None = None                  # in_memory(): {id: context size}; None: the provider can't say
 
     def has_providers(self) -> bool:
         return self.providers
@@ -95,9 +98,27 @@ class FakeRouter:
 
     def stream_chat(self, model_id, messages, tools, settings):
         self.calls.append({"model": model_id, "messages": list(messages),
-                           "tools": [t.name for t in tools], "settings": settings})
+                           "tools": [t.name for t in tools], "specs": list(tools), "settings": settings})
         step = self.steps.pop(0) if self.steps else reply()
         return _play(step)
+
+    def holds_models(self, model_id: str) -> bool:
+        return self.kind == "ollama"
+
+    async def load(self, model_id: str, settings) -> bool:
+        self.loads.append({"model": model_id, "settings": settings})
+        return self.kind == "ollama"
+
+    async def read_prompt(self, model_id: str, messages, tools, settings) -> bool:
+        self.prereads.append({"model": model_id, "messages": list(messages), "tools": [t.name for t in tools],
+                              "settings": settings})
+        return self.kind == "ollama"
+
+    async def in_memory(self, model_id: str) -> dict | None:
+        return self.resident
+
+    async def has_model(self, model_id: str) -> bool:
+        return self.listed
 
 
 async def _play(step):

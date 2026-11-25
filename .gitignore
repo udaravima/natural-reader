@@ -48,4 +48,7 @@ deploy.sh
 # Call benchmark output (scripts/bench_call.py)
 bench-out/
 
+# Recordings from scripts/phone_fake_pbx.py
+phone-call-*.wav
+
 tmp/*

@@ -296,7 +296,7 @@ What it looks like:
 - The chips come from the server (`data-sources` event, saved with the reply as a `sources` note), so they show after a reload too. Pins aren't counted: a pin may come from a different document than the one the chips open.
 - **Why:** a correct answer without "(page N)" was the largest failure left in the eval (2026-10-05). The eval now counts a fact case's pages as cited inline or by a chip, and reports the model's own inline citation rate separately.
 
-**When Stage 0 runs (v2.4): `CHAT_PREFETCH=auto|on|off`, default `auto`.** `auto` runs it only for a model offered no document tools, whose only way to see the document it is; a model with tools searches for itself (agent-first). `on` always runs it, `off` never. Measured 2026-10-05 on the eval (§6.5):
+**When Stage 0 runs (v2.4): `CHAT_PREFETCH=auto|on|off`, default `auto`.** `auto` runs it only for a model offered no document tools, whose only way to see the document it is; a model with tools searches for itself (agent-first), except on a phone line's turns, which run it on `auto` too ([PHONE_LINES.md](PHONE_LINES.md#how-a-line-finds-its-answers)). `on` always runs it, `off` never. Measured 2026-10-05 on the eval (§6.5):
 
 | Model | on | off |
 |---|---|---|

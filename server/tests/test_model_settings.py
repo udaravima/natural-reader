@@ -8,9 +8,10 @@ import pytest
 from server.auth.users import SEED_ADMIN_ID
 from server.llm.providers.base import ProviderConfig
 from server.llm.router import ModelInfo
-from server.llm.types import Capabilities
+from server.llm.types import CallSettings, Capabilities
 from server.services import console_settings, model_settings
 from server.services.inference_limits import InferenceLimits
+from server.tests.chat_harness import FakeRouter
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +78,21 @@ def test_a_non_local_model_ignores_the_deployment_sizes():
     lim = InferenceLimits(num_ctx_max=None, keep_alive_max_s=None)
     ms = replace(model_settings.from_env({}), context_size=8192, context_sizes={"ollama:x": 12288})
     assert model_settings.num_ctx_for(ms, "ollama:x", local=False, user_value=None, limits=lim) is None
+
+
+def test_sized_settings_are_a_turns_settings_with_its_context_size():
+    # One place sizes a turn's context, for the chat turn and the phone's load request alike (R17.2): Ollama reloads
+    # a model whose num_ctx changes, so a load that sized it differently from the call's turns would cost a reload.
+    lim = InferenceLimits(num_ctx_max=32768, keep_alive_max_s=None)
+    unset = model_settings.from_env({})
+    asked = CallSettings(think="off", keep_alive=900)
+    local = FakeRouter()
+    assert model_settings.sized_settings(unset, local, "ollama:gemma4:e4b", asked, lim) == CallSettings(
+        think="off", keep_alive=900, num_ctx=16384)
+    own = replace(unset, context_sizes={"ollama:gemma4:e4b": 8192})
+    assert model_settings.sized_settings(own, local, "gemma4:e4b", asked, lim).num_ctx == 8192    # by its canonical id
+    hosted = FakeRouter(kind="gemini", provider_name="gemini", url="https://gemini.example.com")
+    assert model_settings.sized_settings(unset, hosted, "gemini:gemini-x-flash", asked, lim) == asked
 
 
 def test_deployment_num_ctx_says_where_the_number_came_from():
@@ -248,3 +264,71 @@ async def test_view_names_the_readers_deciding_variable(db_conn):
     assert model_settings.view(values, env)["reader"]["env"] == "WEB_SEARCH_SUMMARY_MODEL"
     assert model_settings.view(values, env)["reader"]["value"] == "ollama:s"
     assert model_settings.view(values, {})["reader"]["env"] == "READER_MODEL"
+
+
+# --- R10.10, R10.11: whether a model may answer a chat turn, a phone call, or be saved on a line ---
+
+async def _offer(db_conn, models):
+    await console_settings.save(db_conn, model_settings.SECTION, {"chat_models": models}, updated_by=SEED_ADMIN_ID)
+
+
+async def test_the_model_rules_apply_the_environment_the_console_and_the_provider(db_conn):
+    router = FakeRouter()
+
+    async def refusal(model_id):
+        return await model_settings.model_refusal(await model_settings.settings_or_env(db_conn), model_id, router)
+    assert await refusal("ollama:m") is None
+    await _offer(db_conn, ["ollama:other"])                 # the console narrows the environment's list
+    assert await refusal("ollama:m") == "not_allowed"
+    await _offer(db_conn, ["ollama:m:latest"])              # checked on the canonical id; ':latest' doesn't matter
+    assert await refusal("m") is None
+    router.listed = False                                   # the provider no longer has it
+    assert await refusal("ollama:m") == "not_listed"
+    router.listed, router.allowed = True, False             # the environment's allow list dropped it
+    assert await refusal("ollama:m") == "not_allowed"
+
+
+def test_model_offered_is_the_offline_half():
+    """The environment's list and the console's, never the provider: the phone gate runs it unbounded, first."""
+    class NoNetwork(FakeRouter):
+        async def is_listed(self, model_id: str) -> bool:
+            raise AssertionError("model_offered must not ask the provider")
+    router = NoNetwork()
+    open_list, narrowed = model_settings.from_env({}), replace(model_settings.from_env({}), chat_models=("ollama:o",))
+    assert model_settings.model_offered(open_list, "m", router) is True
+    assert model_settings.model_offered(narrowed, "ollama:m", router) is False
+    assert model_settings.model_offered(narrowed, "ollama:o:latest", router) is True
+    router.allowed = False
+    assert model_settings.model_offered(open_list, "ollama:m", router) is False
+
+
+async def test_model_refusal_says_which_check_refused_in_the_chats_order():
+    """post_turn's words depend on it: the environment and the console say "not on this server", the provider's own
+    list says "not available"; a model refused by both is refused by the first."""
+    router = FakeRouter()
+    open_list, narrowed = model_settings.from_env({}), replace(model_settings.from_env({}), chat_models=("ollama:o",))
+    assert await model_settings.model_refusal(open_list, "ollama:m", router) is None
+    assert await model_settings.model_refusal(narrowed, "ollama:m", router) == "not_allowed"
+    router.listed = False
+    assert await model_settings.model_refusal(open_list, "ollama:m", router) == "not_listed"
+    assert await model_settings.model_refusal(narrowed, "ollama:m", router) == "not_allowed"
+    router.allowed = False
+    assert await model_settings.model_refusal(open_list, "ollama:m", router) == "not_allowed"
+    assert router.calls == []                               # no model was asked anything
+
+
+async def test_settings_or_env_falls_back_without_spoiling_the_callers_transaction(db_conn, monkeypatch, caplog):
+    """The chat's fail-open, kept: an unreadable models row means the environment's list applies. The read runs in a
+    savepoint, so a failed statement leaves the caller's transaction usable (the phone gate reads more after it)."""
+    async def broken(conn, env=None):
+        await conn.execute("SELECT 1 / 0")              # a real error inside the read
+
+    monkeypatch.setattr(model_settings, "load_models_settings", broken)
+    assert await model_settings.settings_or_env(db_conn) == model_settings.from_env()
+    assert (await (await db_conn.execute("SELECT 1")).fetchone())[0] == 1
+    assert any("environment" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+async def test_settings_or_env_reads_the_consoles_row(db_conn):
+    await _offer(db_conn, ["ollama:o"])
+    assert (await model_settings.settings_or_env(db_conn)).chat_models == ("ollama:o",)

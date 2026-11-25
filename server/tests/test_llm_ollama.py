@@ -365,3 +365,100 @@ async def test_loaded_context_lengths_is_empty_on_any_error():
     assert await OllamaProvider(CFG, up.client()).loaded_context_lengths() == {}
     down = FakeUpstream().on("GET", "/api/ps", httpx.ConnectError("down"))
     assert await OllamaProvider(CFG, down.client()).loaded_context_lengths() == {}
+
+
+# --- loading a model without generating (phone lines, R17.1, R17.2) ---
+
+PHONE = CallSettings(think="off", num_ctx=16384, keep_alive=900)   # a phone turn on a self-hosted model
+LOADED = {"model": "gemma4:e4b", "message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "load"}
+
+
+async def test_load_asks_ollama_to_load_the_model_without_generating():
+    # Ollama's own "load": a chat request with no messages, answered once the model is in memory. Nothing else is
+    # asked (no /api/show: thinking doesn't change how a model loads).
+    up = FakeUpstream().on("POST", "/api/chat", lambda: httpx.Response(200, json=LOADED))
+    assert await OllamaProvider(CFG, up.client()).load("gemma4:e4b", PHONE) is True
+    assert [r.url.path for r in up.requests] == ["/api/chat"]
+    assert up.bodies("/api/chat") == [{"model": "gemma4:e4b", "messages": [], "stream": False, "keep_alive": 900,
+                                       "options": {"num_ctx": 16384}}]
+
+
+@pytest.mark.parametrize("settings", [PHONE, CallSettings(think="off"), CallSettings(think="off", keep_alive=600)])
+async def test_a_load_and_a_turn_with_the_same_settings_agree_on_all_that_loads_a_model(settings):
+    # R17.2: Ollama reloads a model whose options change (num_ctx above all). A load sends exactly the model, the
+    # options and the keep-alive a turn with the same settings sends, and nothing a turn doesn't.
+    up = _up(lambda: httpx.Response(200, json=LOADED), lambda: ndjson(DONE))
+    provider = OllamaProvider(CFG, up.client())
+    await provider.load("gemma4:e4b", settings)
+    await _collect(provider.stream_chat("gemma4:e4b", HI, [], settings))
+    load, turn = up.bodies("/api/chat")
+    loading = ("model", "options", "keep_alive")
+    assert {k: load.get(k) for k in loading} == {k: turn.get(k) for k in loading}
+    assert set(load) <= {"model", "messages", "stream", *loading}
+    if settings.num_ctx is None:
+        assert "options" not in load and "options" not in turn
+
+
+async def test_a_load_that_fails_raises_as_a_turn_would():
+    down = FakeUpstream().on("POST", "/api/chat", httpx.ConnectError("down"))
+    with pytest.raises(ProviderUnavailable):
+        await OllamaProvider(CFG, down.client()).load("gemma4:e4b", PHONE)
+    missing = FakeUpstream().on("POST", "/api/chat", lambda: httpx.Response(404, json={"error": "model not found"}))
+    with pytest.raises(ProviderError) as ei:
+        await OllamaProvider(CFG, missing.client()).load("gemma4:e4b", PHONE)
+    assert ei.value.status == 404
+
+
+# --- reading a prompt ahead of a turn (phone lines, R19.2) ---
+
+READ = {"model": "gemma4:e4b", "message": {"role": "assistant", "content": "Th"}, "done": True, "done_reason": "length",
+        "prompt_eval_count": 1946, "eval_count": 1}
+PREFIX = [Message("system", "You are the line's assistant."), Message("user", "(Look it up.)")]
+
+
+@pytest.mark.parametrize("show, remembered", [(SHOW_ALL, None),
+                                              ({"capabilities": ["completion", "tools"]}, None),
+                                              (SHOW_ALL, "tools")],
+                         ids=["thinking model", "no thinking", "tools refused before"])
+async def test_read_prompt_sends_what_a_turn_sends_and_asks_for_one_token(show, remembered):
+    # R19.2: Ollama caches a prompt by its prefix, so a read ahead of a turn helps only if its body is the turn's own:
+    # the same messages, tools, thinking switch, keep-alive and options (a changed num_ctx would reload the model).
+    # The one differences: it waits for the whole answer (stream false) and asks for at most one token.
+    up = _up(lambda: httpx.Response(200, json=READ), lambda: ndjson(DONE), show=show)
+    provider = OllamaProvider(CFG, up.client())
+    if remembered:
+        provider._features.remember("gemma4:e4b", remembered)
+    assert await provider.read_prompt("gemma4:e4b", PREFIX, [TOOL], PHONE) is True
+    await _collect(provider.stream_chat("gemma4:e4b", PREFIX, [TOOL], PHONE))
+    read, turn = up.bodies("/api/chat")
+    assert read == {**turn, "stream": False, "options": {**turn["options"], "num_predict": 1}}
+    assert turn["options"] == {"num_ctx": 16384} and turn["stream"] is True
+    assert ("tools" in read) is (remembered is None)
+    assert read.get("think", "omitted") == (False if "thinking" in show["capabilities"] else "omitted")
+
+
+async def test_a_read_prompt_that_fails_raises_as_a_turn_would():
+    down = _up(httpx.ConnectError("down"))
+    with pytest.raises(ProviderUnavailable):
+        await OllamaProvider(CFG, down.client()).read_prompt("gemma4:e4b", PREFIX, [TOOL], PHONE)
+    missing = _up(lambda: httpx.Response(404, json={"error": "model not found"}))
+    with pytest.raises(ProviderError) as ei:
+        await OllamaProvider(CFG, missing.client()).read_prompt("gemma4:e4b", PREFIX, [TOOL], PHONE)
+    assert ei.value.status == 404
+
+
+async def test_in_memory_lists_the_models_api_ps_shows_with_their_context_size():
+    up = FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(200, json={"models": [
+        {"name": "gemma4:e4b", "model": "gemma4:e4b", "context_length": 16384, "expires_at": "2026-11-23T10:15:00Z"},
+        {"name": "qwen3:8b"}, {"name": "x", "context_length": True}, {"name": ""}, {"size": 1}, "junk"]}))
+    assert await OllamaProvider(CFG, up.client()).in_memory() == {"gemma4:e4b": 16384, "qwen3:8b": None, "x": None}
+    empty = FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(200, json={"models": []}))
+    assert await OllamaProvider(CFG, empty.client()).in_memory() == {}
+
+
+async def test_in_memory_is_none_when_ollama_cant_say():
+    for up in (FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(500, json={"error": "x"})),
+               FakeUpstream().on("GET", "/api/ps", httpx.ConnectError("down")),
+               FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(200, text="not json")),
+               FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(200, json={"models": {"a": 1}}))):
+        assert await OllamaProvider(CFG, up.client()).in_memory() is None

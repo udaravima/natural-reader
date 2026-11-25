@@ -43,6 +43,19 @@ class Provider(Protocol):
     def stream_chat(self, model: str, messages: list[Message], tools: list[ToolSpec],
                     settings: CallSettings) -> AsyncIterator[Chunk]: ...
 
+    # Holding a model in memory, for a server that loads models (Ollama). A hosted API has nothing to load: its
+    # `load` is a no-op that sends nothing and returns False, and its `in_memory` is None. `in_memory` is
+    # {name: the context size it is loaded with, None when not reported}.
+    async def load(self, model: str, settings: CallSettings) -> bool: ...
+
+    async def in_memory(self) -> dict[str, int | None] | None: ...
+
+    # Reading a prompt ahead of a turn, for a server that caches prompts by their prefix (Ollama): the messages and
+    # tools a turn with `settings` would send, with at most one token generated and thrown away. A hosted API
+    # caches nothing for us: a no-op that sends nothing and returns False.
+    async def read_prompt(self, model: str, messages: list[Message], tools: list[ToolSpec],
+                          settings: CallSettings) -> bool: ...
+
 
 def auth_headers(cfg: ProviderConfig) -> dict[str, str]:
     return {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}

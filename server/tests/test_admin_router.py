@@ -906,3 +906,40 @@ async def test_admin_users_search_requires_admin(db_conn):
     p = deps.Principal(user_id=m["id"], email=m["email"], role="member")
     async with _client(_app(db_conn, p)) as c:
         assert (await c.get("/v1/admin/users", params={"q": "a"})).status_code == 403
+
+
+async def _line_user(db_conn):
+    cur = await db_conn.execute(
+        "INSERT INTO users (email, role, status, kind, capabilities) "
+        "VALUES ('line-z@phone-line.invalid', 'member', 'active', 'line', '{}') RETURNING id")
+    return str((await cur.fetchone())[0])
+
+
+async def test_patch_refuses_a_line_user_for_every_field(db_conn):
+    """A line's service user must never gain admin (or anything else) through the people routes."""
+    from server.auth.users import get_user
+
+    _, p = await _admin(db_conn)
+    line_id = await _line_user(db_conn)
+    before = await get_user(db_conn, line_id)
+    bodies = [{"capabilities": ["admin"]}, {"add_capabilities": ["admin"]}, {"status": "disabled"},
+              {"inference_daily_token_budget": 5}, {"project_limit": 3}]
+    async with _client(_app_kc(db_conn, p, _FakeKC())) as c:
+        for body in bodies:
+            r = await c.patch(f"/v1/admin/users/{line_id}", json=body)
+            assert r.status_code == 409 and r.json()["detail"]["reason"] == "phone_line", body
+    after = await get_user(db_conn, line_id)
+    assert after["capabilities"] == before["capabilities"] == []
+    assert after["status"] == "active" and after["role"] == "member"
+    assert after["inference_daily_token_budget"] == before["inference_daily_token_budget"]
+    assert after["project_limit"] == before["project_limit"]
+
+
+async def test_delete_refuses_a_line_user(db_conn):
+    _, p = await _admin(db_conn)
+    line_id = await _line_user(db_conn)
+    async with _client(_app_kc(db_conn, p, _FakeKC())) as c:
+        r = await c.delete(f"/v1/admin/users/{line_id}")
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "phone_line"
+    cur = await db_conn.execute("SELECT count(*) FROM users WHERE id = %s", (line_id,))
+    assert (await cur.fetchone())[0] == 1

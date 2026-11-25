@@ -150,6 +150,18 @@ async def test_model_not_allowed_is_422(db_conn, app):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "model_not_allowed"
 
 
+async def test_a_model_the_env_forbids_is_refused_with_its_words_before_claiming(db_conn, app):
+    """The environment's refusal comes first and keeps its words, even for a model its provider doesn't list
+    either. The checks are model_settings.model_refusal's, which the phone lines share (R10.10)."""
+    app[1].allowed = False
+    app[1].listed = False
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"error": "model_not_allowed", "message": "That model isn't available on this server."}
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+    assert app[1].calls == []
+
+
 async def _select_chat_models(db_conn, models):
     from server.auth.users import SEED_ADMIN_ID
     from server.services import console_settings, model_settings
