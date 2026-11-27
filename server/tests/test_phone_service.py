@@ -954,6 +954,10 @@ async def test_after_small_talk_a_question_still_reaches_the_model_with_its_pass
         return bool(calls) and [m[1:] for m in await messages_of(pool, calls[0]["session_id"])][-1:] == [
             ("We open at nine.", "complete")]
     await until(answered)
+    # The reply is saved as soon as the model finishes, but its sound goes out at the pacer's real-time pace:
+    # hanging up now could beat the filler and the answer down the line (a flake on a busy CI runner). Wait for
+    # the answer's own sound (FakeVoice's second sentence, tone 102); the filler, queued before it, has gone too.
+    await until(lambda: 102 in media.heard())
     media.caller_hangs_up()
     await asyncio.wait_for(running, 5)
 
