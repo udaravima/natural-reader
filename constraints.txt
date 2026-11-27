@@ -73,6 +73,7 @@ pyyaml==6.0.3
 regex==2026.9.29
 requests==2.34.2
 respx==0.23.1
+scipy==1.18.1
 six==1.17.0
 soundfile==0.14.0
 starlette==1.7.0

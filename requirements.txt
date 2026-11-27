@@ -55,9 +55,14 @@ filelock>=3.12,<4
 
 # Audio processing
 soundfile>=0.14,<1
+# server/phone/call.py and voice.py: a phone line's 8 kHz resampling and filtering. Listed, not left to
+# Docling's dependencies: a backend built without Docling would otherwise fail to start.
+scipy>=1.18,<2
 
 # Data validation (used by FastAPI)
 pydantic>=2.13,<3
+# server/schemas.py imports it directly (pydantic brings it too).
+typing-extensions>=4.16,<5
 
 # Optional: torch is imported but may not be needed with ONNX model
 # Uncomment if required by your setup

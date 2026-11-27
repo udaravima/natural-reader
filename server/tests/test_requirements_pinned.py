@@ -68,3 +68,51 @@ def test_the_test_harness_is_not_in_the_list_the_image_installs():
     text = (ROOT / "Containerfile").read_text()
     assert "requirements-dev" not in text and "pytest" not in text
     assert "!requirements-dev.txt" not in (ROOT / ".dockerignore").read_text()
+
+
+def _module_level_imports() -> dict[str, str]:
+    """Every third-party module the server imports when it loads (a module's top-level import statements, not
+    those inside a function, an `if` or a `try`), mapped to the first file that imports it."""
+    import ast
+    import sys
+
+    found: dict[str, str] = {}
+    for path in sorted((ROOT / "server").rglob("*.py")):
+        if "tests" in path.relative_to(ROOT).parts:
+            continue
+        for node in ast.parse(path.read_text(), str(path)).body:
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                top = name.split(".")[0]
+                if top not in sys.stdlib_module_names and top not in {"server", "__future__"}:
+                    found.setdefault(top, str(path.relative_to(ROOT)))
+    return found
+
+
+def test_everything_the_server_imports_at_load_is_in_requirements():
+    """A package the app imports as it starts must be in requirements.txt, the list the image always installs.
+    One that only arrives as another package's dependency can vanish from an image that leaves that package out:
+    scipy came only with the Docling extras, so a backend built without Docling couldn't start."""
+    from importlib.metadata import packages_distributions
+
+    from importlib.metadata import requires
+
+    declared = set()
+    for req in _requirements("requirements.txt"):
+        declared.add(canonicalize_name(req.name))
+        for extra in req.extras:               # psycopg[pool] guarantees psycopg-pool
+            for dep in map(Requirement, requires(req.name) or []):
+                if dep.marker is not None and dep.marker.evaluate({"extra": extra}):
+                    declared.add(canonicalize_name(dep.name))
+    provides = packages_distributions()
+    missing = {
+        module: where
+        for module, where in _module_level_imports().items()
+        if not {canonicalize_name(dist) for dist in provides.get(module, [])} & declared
+    }
+    assert not missing, f"imported at load but not in requirements.txt: {missing}"
